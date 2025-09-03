@@ -1,0 +1,33 @@
+
+# Binaries
+/sidekick
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Go build artifacts
+*.test
+*.out
+
+# Coverage reports
+coverage.*
+*.coverprofile
+
+# Dependency directories (Go Modules handles dependencies)
+vendor/
+
+# IDE/editor junk
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Logs
+*.log
+
+# OS junk
+.DS_Store
+Thumbs.db
