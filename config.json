@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "hosts": {
+    "macbook-m2pro": {
+      "general_model": "mistral:7b",
+      "code_model": "deepseek-coder:6.7b",
+      "keep_alive": "15m",
+      "temperature": 0.7,
+      "num_predict": 128,
+      "num_ctx": 2048
+    },
+    "workstation-7600": {
+      "general_model": "llama3.1:8b",
+      "code_model": "deepseek-coder:33b",
+      "keep_alive": "1h",
+      "temperature": 0.6,
+      "num_predict": 128,
+      "num_ctx": 4096
+    }
+  },
+  "default_host": "workstation-7600"
+}

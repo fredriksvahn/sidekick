@@ -1,6 +1,7 @@
 
 # Binaries
 /sidekick
+sidekick
 *.exe
 *.exe~
 *.dll
