@@ -7,12 +7,9 @@ import (
 
 func DefaultProfile() HostProfile {
 	return HostProfile{
-		GeneralModel: "phi3:3.8b",
-		CodeModel:    "deepseek-coder:1.3b",
-		KeepAlive:    "30m",
-		Temperature:  0.7,
-		NumPredict:   128,
-		NumCtx:       2048,
+		Model:       "gpt-4o-mini",
+		Temperature: 0.7,
+		MaxTokens:   512,
 	}
 }
 

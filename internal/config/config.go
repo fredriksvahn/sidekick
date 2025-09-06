@@ -1,22 +1,28 @@
 package config
 
-import "os"
+import (
+	"os"
+	"strconv"
+)
 
-// Later we can parse flags/env/files. For now: env overrides.
 func FromEnv() App {
 	cfg := Defaults()
 
-	if v := os.Getenv("SIDEKICK_OLLAMA_HOST"); v != "" {
-		cfg.Ollama.Host = v
+	if v := os.Getenv("OPENAI_API_KEY"); v != "" {
+		cfg.OpenAI.APIKey = v
 	}
-	if v := os.Getenv("SIDEKICK_OLLAMA_MODEL"); v != "" {
-		cfg.Ollama.Model = v
+	if v := os.Getenv("SIDEKICK_OPENAI_MODEL"); v != "" {
+		cfg.OpenAI.Model = v
 	}
-	if v := os.Getenv("SIDEKICK_OLLAMA_KEEP_ALIVE"); v != "" {
-		cfg.Ollama.KeepAlive = v
+	if v := os.Getenv("SIDEKICK_OPENAI_TEMP"); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			cfg.OpenAI.Temperature = f
+		}
 	}
-	if v := os.Getenv("SIDEKICK_OLLAMA_TEMP"); v != "" {
-		// keep simple; parse later as needed
+	if v := os.Getenv("SIDEKICK_OPENAI_MAX_TOKENS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.OpenAI.MaxTokens = n
+		}
 	}
 
 	return cfg

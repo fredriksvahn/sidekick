@@ -1,12 +1,10 @@
 package config
 
 type HostProfile struct {
-	GeneralModel string  `json:"general_model"`
-	CodeModel    string  `json:"code_model"`
-	KeepAlive    string  `json:"keep_alive"`
-	Temperature  float64 `json:"temperature"`
-	NumPredict   int     `json:"num_predict"`
-	NumCtx       int     `json:"num_ctx"`
+	Model       string  `json:"model"`
+	Temperature float64 `json:"temperature"`
+	MaxTokens   int     `json:"max_tokens"`
+	APIKey      string  `json:"api_key,omitempty"`
 }
 
 type AppConfig struct {

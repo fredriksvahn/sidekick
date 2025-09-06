@@ -1,27 +1,23 @@
 package config
 
-import "time"
-
-type Ollama struct {
-	Host        string
+type OpenAI struct {
+	APIKey      string
 	Model       string
-	KeepAlive   string
 	Temperature float64
-	ColdStart   time.Duration
+	MaxTokens   int
 }
 
 type App struct {
-	Ollama Ollama
+	OpenAI OpenAI
 }
 
 func Defaults() App {
 	return App{
-		Ollama: Ollama{
-			Host:        "http://localhost:11434",
-			Model:       "mistral:latest",
-			KeepAlive:   "30m",
+		OpenAI: OpenAI{
+			APIKey:      "",
+			Model:       "gpt-4o-mini",
 			Temperature: 0.7,
-			ColdStart:   3 * time.Second,
+			MaxTokens:   512,
 		},
 	}
 }

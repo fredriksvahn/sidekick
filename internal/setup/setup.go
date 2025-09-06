@@ -4,14 +4,14 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/earlysvahn/sidekick/internal/config"
-	"github.com/earlysvahn/sidekick/internal/ollama"
 )
 
-func promptPick(prompt string, options []string) string {
-	fmt.Println(prompt)
+func promptPick(prompt string, options []string, def string) string {
+	fmt.Printf("%s (default: %s)\n", prompt, def)
 	for i, o := range options {
 		fmt.Printf("  [%d] %s\n", i+1, o)
 	}
@@ -19,6 +19,9 @@ func promptPick(prompt string, options []string) string {
 	in := bufio.NewScanner(os.Stdin)
 	for in.Scan() {
 		s := strings.TrimSpace(in.Text())
+		if s == "" {
+			return def
+		}
 		var idx int
 		_, err := fmt.Sscanf(s, "%d", &idx)
 		if err == nil && idx >= 1 && idx <= len(options) {
@@ -26,35 +29,57 @@ func promptPick(prompt string, options []string) string {
 		}
 		fmt.Print("Try again: ")
 	}
-	return ""
+	return def
+}
+
+func promptFloat(prompt string, def float64) float64 {
+	fmt.Printf("%s (default: %.2f): ", prompt, def)
+	in := bufio.NewScanner(os.Stdin)
+	if in.Scan() {
+		s := strings.TrimSpace(in.Text())
+		if s == "" {
+			return def
+		}
+		if f, err := strconv.ParseFloat(s, 64); err == nil {
+			return f
+		}
+	}
+	return def
+}
+
+func promptInt(prompt string, def int) int {
+	fmt.Printf("%s (default: %d): ", prompt, def)
+	in := bufio.NewScanner(os.Stdin)
+	if in.Scan() {
+		s := strings.TrimSpace(in.Text())
+		if s == "" {
+			return def
+		}
+		if n, err := strconv.Atoi(s); err == nil {
+			return n
+		}
+	}
+	return def
 }
 
 func Run(hostname string) error {
-	cfg, _ := config.Load() // ignore if missing
-	// list models
-	models, err := ollama.ListLocalModels("http://localhost:11434")
-	if err != nil || len(models) == 0 {
-		fmt.Println("No local models detected via ollama. Is ollama running?")
-	}
+	cfg, _ := config.Load()
 
-	// fallbacks if nothing found
-	if len(models) == 0 {
-		models = []string{"phi3:3.8b", "qwen2.5:3b", "mistral:7b", "deepseek-coder:1.3b", "deepseek-coder:6.7b"}
-	}
+	models := []string{"gpt-4o-mini", "gpt-4o"}
 
-	gen := promptPick("Pick GENERAL model:", models)
-	code := promptPick("Pick CODE model:", models)
-
-	// build profile with sensible knobs
 	p := config.DefaultProfile()
-	if gen != "" { p.GeneralModel = gen }
-	if code != "" { p.CodeModel = code }
+	p.Model = promptPick("Pick default OpenAI model:", models, p.Model)
+	p.Temperature = promptFloat("Default temperature", p.Temperature)
+	p.MaxTokens = promptInt("Default max tokens", p.MaxTokens)
 
 	config.SetHostProfile(&cfg, hostname, p)
-	if cfg.DefaultHost == "" { cfg.DefaultHost = hostname }
+	if cfg.DefaultHost == "" {
+		cfg.DefaultHost = hostname
+	}
 
-	if err := config.Save(cfg); err != nil { return err }
+	if err := config.Save(cfg); err != nil {
+		return err
+	}
 	fmt.Printf("Saved config to %s (host=%s)\n", config.File(), hostname)
 	return nil
 }
-
