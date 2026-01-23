@@ -32,3 +32,6 @@ vendor/
 # OS junk
 .DS_Store
 Thumbs.db
+
+# Secrets (never commit)
+secrets.json

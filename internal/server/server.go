@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 
@@ -14,11 +15,17 @@ const DefaultAddr = "0.0.0.0:1337"
 
 // Run starts the HTTP server
 func Run(modelOverride string) error {
+	// Explicitly bind to IPv4 to ensure LAN reachability on Windows/WSL2
+	listener, err := net.Listen("tcp4", DefaultAddr)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stderr, "[sidekick] listening on %s\n", listener.Addr())
+
 	http.HandleFunc("/health", handleHealth)
 	http.HandleFunc("/execute", handleExecute(modelOverride))
 
-	fmt.Fprintf(os.Stderr, "[sidekick] server listening on %s\n", DefaultAddr)
-	return http.ListenAndServe(DefaultAddr, nil)
+	return http.Serve(listener, nil)
 }
 
 func handleHealth(w http.ResponseWriter, r *http.Request) {
