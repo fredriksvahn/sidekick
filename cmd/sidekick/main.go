@@ -98,7 +98,7 @@ func main() {
 }
 
 func runServer(modelOverride string) {
-	const addr = ":8080"
+	const addr = "0.0.0.0:1337"
 	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
