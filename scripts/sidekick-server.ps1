@@ -39,10 +39,10 @@ function Send-DiscordMessage($text) {
         return
     }
     try {
-        # Escape quotes and backslashes for JSON
-        $escaped = $text -replace '\\', '\\\\' -replace '"', '\"'
-        $json = '{"content":"' + $escaped + '"}'
-        Invoke-RestMethod -Uri $webhookUrl -Method Post -ContentType "application/json" -Body $json | Out-Null
+        $payload = @{ content = $text }
+        $json = $payload | ConvertTo-Json -Depth 1 -Compress
+        $utf8 = [System.Text.Encoding]::UTF8.GetBytes($json)
+        Invoke-RestMethod -Uri $webhookUrl -Method Post -ContentType "application/json" -Body $utf8 | Out-Null
         Log "Discord notification sent"
     } catch {
         Log "Failed to send Discord notification: $_"
