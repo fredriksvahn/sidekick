@@ -9,6 +9,8 @@ import (
 	"github.com/earlysvahn/sidekick/internal/chat"
 )
 
+const BaseURL = "http://localhost:11434"
+
 type chatReq struct {
 	Model    string         `json:"model"`
 	Messages []chat.Message `json:"messages"`
@@ -26,9 +28,15 @@ func Ask(model string, messages []chat.Message) (string, error) {
 		Messages: messages,
 		Stream:   false,
 	}
-	b, _ := json.Marshal(req)
+	b, err := json.Marshal(req)
+	if err != nil {
+		return "", fmt.Errorf("marshal request: %w", err)
+	}
 
-	httpReq, _ := http.NewRequest("POST", "http://localhost:11434/api/chat", bytes.NewReader(b))
+	httpReq, err := http.NewRequest("POST", BaseURL+"/api/chat", bytes.NewReader(b))
+	if err != nil {
+		return "", fmt.Errorf("create request: %w", err)
+	}
 	httpReq.Header.Set("Content-Type", "application/json")
 
 	resp, err := http.DefaultClient.Do(httpReq)

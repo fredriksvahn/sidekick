@@ -1,10 +1,8 @@
 package main
 
 import (
-	"encoding/json"
 	"flag"
 	"fmt"
-	"net/http"
 	"os"
 	"strings"
 	"time"
@@ -12,6 +10,7 @@ import (
 	"github.com/earlysvahn/sidekick/internal/chat"
 	"github.com/earlysvahn/sidekick/internal/config"
 	"github.com/earlysvahn/sidekick/internal/executor"
+	"github.com/earlysvahn/sidekick/internal/server"
 	"github.com/earlysvahn/sidekick/internal/store"
 )
 
@@ -42,7 +41,10 @@ func main() {
 	}
 
 	if serve {
-		runServer(modelOverride)
+		if err := server.Run(modelOverride); err != nil {
+			fmt.Fprintln(os.Stderr, "[server error]", err)
+			os.Exit(1)
+		}
 		return
 	}
 
@@ -97,56 +99,22 @@ func main() {
 	_ = historyStore.Append(contextName, store.Message{Role: "assistant", Content: reply, Time: now})
 }
 
-func runServer(modelOverride string) {
-	const addr = "0.0.0.0:1337"
-	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	})
-	http.HandleFunc("/execute", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			w.WriteHeader(http.StatusMethodNotAllowed)
-			return
-		}
-		var req struct {
-			Messages []chat.Message `json:"messages"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, "invalid JSON", http.StatusBadRequest)
-			return
-		}
-		logf := func(msg string) {
-			fmt.Fprintf(os.Stderr, "[sidekick] %s\n", msg)
-		}
-		reply, err := (&executor.OllamaExecutor{Model: modelOverride, Log: logf}).Execute(req.Messages)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadGateway)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]string{"reply": reply})
-	})
-	if err := http.ListenAndServe(addr, nil); err != nil {
-		fmt.Fprintln(os.Stderr, "[server error]", err)
-	}
-}
-
 func executeWithFallback(modelOverride, remoteURL string, localOnly, remoteOnly bool, messages []chat.Message, logf func(string)) (string, error) {
 	if localOnly {
 		logf("execution path: local ollama (forced)")
-		return (&executor.OllamaExecutor{Model: modelOverride, Log: logf}).Execute(messages)
+		return (&executor.OllamaExecutor{Model: modelOverride, Log: nil}).Execute(messages)
 	}
 	if remoteURL == "" {
 		if remoteOnly {
 			return "", fmt.Errorf("remote execution requested but no remote is configured")
 		}
 		logf("execution path: local ollama (no remote configured)")
-		return (&executor.OllamaExecutor{Model: modelOverride, Log: logf}).Execute(messages)
+		return (&executor.OllamaExecutor{Model: modelOverride, Log: nil}).Execute(messages)
 	}
 
-	httpExec := executor.NewHTTPExecutor(remoteURL, 500*time.Millisecond, logf)
+	httpExec := executor.NewHTTPExecutor(remoteURL, 30*time.Second, nil)
 	ok, healthErr := httpExec.Available()
 	if ok {
-		logf("execution path: remote http")
 		reply, err := httpExec.Execute(messages)
 		if err == nil {
 			return reply, nil
@@ -154,16 +122,15 @@ func executeWithFallback(modelOverride, remoteURL string, localOnly, remoteOnly 
 		if remoteOnly {
 			return "", err
 		}
-		logf(fmt.Sprintf("remote failed, falling back to local: %v", err))
+		logf("using local")
 	} else if healthErr != nil {
 		if remoteOnly {
 			return "", fmt.Errorf("remote execution requested but health check failed: %v", healthErr)
 		}
-		logf(fmt.Sprintf("remote health check failed, falling back to local: %v", healthErr))
+		logf("using local")
 	} else if remoteOnly {
 		return "", fmt.Errorf("remote execution requested but health check failed")
 	}
 
-	logf("execution path: local ollama (fallback)")
-	return (&executor.OllamaExecutor{Model: modelOverride, Log: logf}).Execute(messages)
+	return (&executor.OllamaExecutor{Model: modelOverride, Log: nil}).Execute(messages)
 }

@@ -46,7 +46,7 @@ func EnsureModel(model string, logf func(string)) error {
 }
 
 func hasModel(model string) (bool, error) {
-	resp, err := http.Get("http://localhost:11434/api/tags")
+	resp, err := http.Get(BaseURL + "/api/tags")
 	if err != nil {
 		return false, err
 	}
@@ -72,8 +72,14 @@ func hasModel(model string) (bool, error) {
 
 func pullModel(model string) error {
 	payload := map[string]any{"name": model, "stream": false}
-	b, _ := json.Marshal(payload)
-	req, _ := http.NewRequest("POST", "http://localhost:11434/api/pull", bytes.NewReader(b))
+	b, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("marshal pull request: %w", err)
+	}
+	req, err := http.NewRequest("POST", BaseURL+"/api/pull", bytes.NewReader(b))
+	if err != nil {
+		return fmt.Errorf("create pull request: %w", err)
+	}
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {

@@ -2,6 +2,7 @@ package executor
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -31,7 +32,14 @@ func (e *HTTPExecutor) Available() (bool, error) {
 	if e.Log != nil {
 		e.Log(fmt.Sprintf("remote health check start %s/health", e.BaseURL))
 	}
-	req, _ := http.NewRequest("GET", e.BaseURL+"/health", nil)
+	// Use a short timeout for health check (1 second)
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, "GET", e.BaseURL+"/health", nil)
+	if err != nil {
+		return false, fmt.Errorf("create health check request: %w", err)
+	}
 	resp, err := e.Client.Do(req)
 	if err != nil {
 		if e.Log != nil {
@@ -57,8 +65,14 @@ func (e *HTTPExecutor) Execute(messages []chat.Message) (string, error) {
 		e.Log("remote execute start")
 	}
 	payload := map[string]any{"messages": messages}
-	b, _ := json.Marshal(payload)
-	req, _ := http.NewRequest("POST", e.BaseURL+"/execute", bytes.NewReader(b))
+	b, err := json.Marshal(payload)
+	if err != nil {
+		return "", fmt.Errorf("marshal request: %w", err)
+	}
+	req, err := http.NewRequest("POST", e.BaseURL+"/execute", bytes.NewReader(b))
+	if err != nil {
+		return "", fmt.Errorf("create request: %w", err)
+	}
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := e.Client.Do(req)
