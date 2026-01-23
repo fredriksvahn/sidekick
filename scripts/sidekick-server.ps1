@@ -101,7 +101,7 @@ try {
 
     # Notify only if updated
     if ($wasUpdated) {
-        Send-DiscordMessage "🚀 Sidekick updated and rebuilt successfully"
+        Send-DiscordMessage "[OK] Sidekick updated and rebuilt successfully"
     }
 
     # Run server
@@ -114,7 +114,7 @@ try {
 } catch {
     $errorMsg = $_.Exception.Message
     Log "FATAL: $errorMsg"
-    Send-DiscordMessage "❌ Sidekick startup failed: $errorMsg"
+    Send-DiscordMessage "[FAIL] Sidekick startup failed: $errorMsg"
     exit 1
 }
 
