@@ -40,7 +40,8 @@ function Send-DiscordMessage($text) {
     }
     try {
         $body = @{ content = $text } | ConvertTo-Json -Compress
-        Invoke-RestMethod -Uri $webhookUrl -Method Post -ContentType "application/json" -Body $body | Out-Null
+        $bytes = [System.Text.Encoding]::UTF8.GetBytes($body)
+        Invoke-RestMethod -Uri $webhookUrl -Method Post -ContentType "application/json; charset=utf-8" -Body $bytes | Out-Null
         Log "Discord notification sent"
     } catch {
         Log "Failed to send Discord notification: $_"
