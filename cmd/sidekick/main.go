@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"strings"
@@ -99,6 +100,15 @@ func main() {
 
 func runServer(modelOverride string) {
 	const addr = "0.0.0.0:1337"
+
+	// Explicitly bind to IPv4 to ensure LAN reachability on Windows/WSL2
+	listener, err := net.Listen("tcp4", addr)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "[server error]", err)
+		return
+	}
+	fmt.Fprintf(os.Stderr, "[sidekick] listening on %s\n", listener.Addr())
+
 	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
@@ -125,7 +135,7 @@ func runServer(modelOverride string) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]string{"reply": reply})
 	})
-	if err := http.ListenAndServe(addr, nil); err != nil {
+	if err := http.Serve(listener, nil); err != nil {
 		fmt.Fprintln(os.Stderr, "[server error]", err)
 	}
 }
