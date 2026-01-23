@@ -5,6 +5,7 @@ $repoUrl = "https://github.com/earlysvahn/sidekick.git"
 $installDir = "C:\sidekick"
 $repoDir = "$installDir\repo"
 $logFile = "$installDir\sidekick.log"
+$scriptPath = "$installDir\sidekick-server.ps1"
 
 # Create install directory
 New-Item -ItemType Directory -Force -Path $installDir | Out-Null
@@ -85,6 +86,19 @@ try {
 
         Set-Location $repoDir
         $wasUpdated = $true
+    }
+
+    # Self-update script if changed
+    $repoScript = "$repoDir\scripts\sidekick-server.ps1"
+    if (Test-Path $repoScript) {
+        $currentHash = (Get-FileHash $scriptPath -Algorithm MD5 -ErrorAction SilentlyContinue).Hash
+        $repoHash = (Get-FileHash $repoScript -Algorithm MD5).Hash
+        if ($currentHash -ne $repoHash) {
+            Log "Script updated, restarting..."
+            Copy-Item $repoScript $scriptPath -Force
+            & powershell -ExecutionPolicy Bypass -File $scriptPath
+            exit
+        }
     }
 
     # Build
