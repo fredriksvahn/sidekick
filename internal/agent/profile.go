@@ -10,6 +10,12 @@ type AgentProfile struct {
 
 // Profiles is the registry of all available agent profiles
 var Profiles = map[string]AgentProfile{
+	"default": {
+		Name:         "default",
+		LocalModel:   "",
+		RemoteModel:  "",
+		SystemPrompt: "",
+	},
 	"code": {
 		Name:        "code",
 		LocalModel:  "qwen2.5:14b",

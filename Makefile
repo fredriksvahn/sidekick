@@ -5,8 +5,14 @@ WINDOWS_PATH=/mnt/c/sidekick
 all: build
 
 build:
-	@echo "[build] go build -o $(BINARY_NAME) ./cmd/sidekick"
-	@go build -o $(BINARY_NAME) ./cmd/sidekick || (echo "[build] build failed"; exit 1)
+	@echo "[build] Building and installing sidekick..."
+	@go install ./cmd/sidekick || (echo "[build] build failed"; exit 1)
+	@echo "[build] ✓ sidekick installed to $(shell go env GOPATH)/bin/sidekick"
+	@echo "[build] Run 'sidekick' from anywhere (ensure $(shell go env GOPATH)/bin is in PATH)"
+
+build-local:
+	@echo "[build-local] go build -o $(BINARY_NAME) ./cmd/sidekick"
+	@go build -o $(BINARY_NAME) ./cmd/sidekick || (echo "[build-local] build failed"; exit 1)
 
 build-windows:
 	@echo "[build-windows] GOOS=windows GOARCH=amd64 go build -o $(WINDOWS_BINARY) ./cmd/sidekick"
@@ -22,11 +28,9 @@ serve: build-windows
 install:
 	go install ./cmd/sidekick
 
-run:
-	@echo "[run] go build -o $(BINARY_NAME) ./cmd/sidekick"
-	@go build -o $(BINARY_NAME) ./cmd/sidekick || (echo "[run] build failed"; exit 1)
-	@echo "[run] ./$(BINARY_NAME)"
-	@./$(BINARY_NAME)
+run: build
+	@echo "[run] sidekick"
+	@sidekick
 
 clean:
 	@echo "[clean] rm -f $(BINARY_NAME) $(WINDOWS_BINARY)"

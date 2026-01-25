@@ -22,6 +22,64 @@ import (
 	"github.com/earlysvahn/sidekick/internal/tui"
 )
 
+func printUsage() {
+	fmt.Println("Sidekick - AI assistant CLI with context persistence and agent profiles")
+	fmt.Println()
+	fmt.Println("USAGE:")
+	fmt.Println("  sidekick [OPTIONS] \"your prompt\"              One-shot query")
+	fmt.Println("  sidekick chat [OPTIONS]                       Interactive chat mode")
+	fmt.Println("  sidekick tui [OPTIONS]                        Full-screen TUI mode")
+	fmt.Println("  sidekick contexts [--storage BACKEND]         List all contexts")
+	fmt.Println("  sidekick history --context NAME               Show context history")
+	fmt.Println("  sidekick sync push|pull                       Sync SQLite ↔ Postgres")
+	fmt.Println()
+	fmt.Println("COMMON OPTIONS:")
+	fmt.Println("  --agent PROFILE        Use agent profile (see below)")
+	fmt.Println("  --context, --ctx NAME  Context name (default: misc)")
+	fmt.Println("  --system PROMPT        Override system prompt")
+	fmt.Println("  --history N            Number of messages to include (default: 4)")
+	fmt.Println("  --storage BACKEND      Storage backend: file|sqlite|postgres")
+	fmt.Println("  --local                Force local Ollama execution")
+	fmt.Println("  --remote               Force remote execution")
+	fmt.Println("  --model MODEL          Override model selection")
+	fmt.Println("  --quiet                Suppress non-error logs")
+	fmt.Println()
+	fmt.Println("AVAILABLE AGENTS:")
+	profiles := agent.ListProfiles()
+	for _, name := range profiles {
+		p := agent.GetProfile(name)
+		if p != nil {
+			if name == "default" {
+				fmt.Printf("  %-18s No specialized behavior\n", name)
+			} else {
+				// Show first line of system prompt as description
+				desc := p.SystemPrompt
+				if len(desc) > 50 {
+					desc = desc[:50] + "..."
+				}
+				if idx := strings.Index(desc, "\n"); idx > 0 {
+					desc = desc[:idx]
+				}
+				fmt.Printf("  %-18s %s\n", name, desc)
+			}
+		}
+	}
+	fmt.Println()
+	fmt.Println("EXAMPLES:")
+	fmt.Println("  sidekick \"explain goroutines\"")
+	fmt.Println("  sidekick --agent golang-dev \"write a web server\"")
+	fmt.Println("  sidekick chat --agent code --context myproject")
+	fmt.Println("  sidekick tui --agent sql-dev")
+	fmt.Println()
+	fmt.Println("INTERACTIVE COMMANDS:")
+	fmt.Println("  /agent NAME            Switch to different agent profile")
+	fmt.Println("  Ctrl+C / Ctrl+D        Exit chat/TUI mode")
+	fmt.Println()
+	fmt.Println("EXECUTION SOURCE:")
+	fmt.Println("  Responses show (source: local|remote|fallback) indicating where")
+	fmt.Println("  the LLM execution occurred. Use --local or --remote to force a source.")
+}
+
 func main() {
 	// Check for chat subcommand
 	if len(os.Args) > 1 && os.Args[1] == "chat" {
@@ -138,12 +196,7 @@ func main() {
 	}
 
 	if flag.NArg() == 0 {
-		fmt.Println("Usage: sidekick [--model MODEL] \"your prompt\"")
-		fmt.Println("   or: sidekick chat [--context NAME]")
-		fmt.Println("   or: sidekick tui [--context NAME]")
-		fmt.Println("   or: sidekick contexts [--storage BACKEND]")
-		fmt.Println("   or: sidekick history --context NAME [--storage BACKEND]")
-		fmt.Println("   or: sidekick sync push|pull")
+		printUsage()
 		os.Exit(1)
 	}
 	rawPrompt := strings.Join(flag.Args(), " ")
@@ -184,16 +237,17 @@ func main() {
 		profile = agent.GetProfile(agentProfile)
 	}
 
-	reply, err := executeWithFallback(modelOverride, remoteURL, localOnly, remoteOnly, messages, logf, profile)
+	result, err := executeWithFallback(modelOverride, remoteURL, localOnly, remoteOnly, messages, logf, profile)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "[executor error]", err)
 		os.Exit(1)
 	}
-	fmt.Println(reply)
+	fmt.Println(result.reply)
+	fmt.Printf("(source: %s)\n", result.source)
 
 	now := time.Now().UTC()
 	_ = historyStore.Append(contextName, store.Message{Role: "user", Content: rawPrompt, Time: now})
-	_ = historyStore.Append(contextName, store.Message{Role: "assistant", Content: reply, Time: now})
+	_ = historyStore.Append(contextName, store.Message{Role: "assistant", Content: result.reply, Time: now})
 }
 
 // createHistoryStore instantiates the appropriate storage backend
@@ -317,6 +371,12 @@ func runChatCommand(args []string) error {
 		}
 	}
 
+	// Determine agent name for display
+	currentAgent := "default"
+	if agentProfile != "" {
+		currentAgent = agentProfile
+	}
+
 	return runChatMode(
 		contextName,
 		ctxHist.System,
@@ -329,6 +389,7 @@ func runChatCommand(args []string) error {
 		remoteOnly,
 		logf,
 		profile,
+		currentAgent,
 	)
 }
 
@@ -345,13 +406,14 @@ func runChatMode(
 	remoteOnly bool,
 	logf func(string),
 	profile *agent.AgentProfile,
+	currentAgent string,
 ) error {
 	// Setup signal handling with context
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	// Print welcome message
-	fmt.Fprintf(os.Stderr, "Chat mode (context: %s)\n", contextName)
+	fmt.Fprintf(os.Stderr, "Chat mode (context: %s | agent: %s)\n", contextName, currentAgent)
 	if system != "" {
 		fmt.Fprintf(os.Stderr, "System: %s\n", system)
 	}
@@ -369,7 +431,7 @@ func runChatMode(
 		default:
 		}
 
-		fmt.Fprint(os.Stderr, "> ")
+		fmt.Fprintf(os.Stderr, "[%s] > ", currentAgent)
 
 		// Read input in goroutine to allow cancellation
 		inputChan := make(chan string, 1)
@@ -405,24 +467,45 @@ func runChatMode(
 			continue
 		}
 
+		// Check for /agent command
+		if strings.HasPrefix(input, "/agent ") {
+			newAgent := strings.TrimSpace(strings.TrimPrefix(input, "/agent"))
+			newProfile := agent.GetProfile(newAgent)
+			if newProfile == nil {
+				fmt.Fprintf(os.Stderr, "Unknown agent: %s\n", newAgent)
+				fmt.Fprintf(os.Stderr, "Available agents: %s\n\n", strings.Join(agent.ListProfiles(), ", "))
+				continue
+			}
+			// Switch agent
+			currentAgent = newAgent
+			profile = newProfile
+			// Update system prompt if profile has one
+			if newProfile.SystemPrompt != "" {
+				system = newProfile.SystemPrompt
+			}
+			fmt.Fprintf(os.Stderr, "Switched to agent: %s\n\n", currentAgent)
+			continue
+		}
+
 		// Build messages
 		messages := buildMessages(system, history, historyLimit, input)
 
 		// Execute
-		reply, err := executeWithFallback(modelOverride, remoteURL, localOnly, remoteOnly, messages, logf, profile)
+		result, err := executeWithFallback(modelOverride, remoteURL, localOnly, remoteOnly, messages, logf, profile)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "[error] %v\n\n", err)
 			continue
 		}
 
-		// Print response
-		fmt.Println(reply)
+		// Print response with source
+		fmt.Println(result.reply)
+		fmt.Printf("(source: %s)\n", result.source)
 		fmt.Println()
 
 		// Persist messages
 		now := time.Now().UTC()
 		userMsg := store.Message{Role: "user", Content: input, Time: now}
-		assistantMsg := store.Message{Role: "assistant", Content: reply, Time: now}
+		assistantMsg := store.Message{Role: "assistant", Content: result.reply, Time: now}
 
 		if err := historyStore.Append(contextName, userMsg); err != nil {
 			fmt.Fprintf(os.Stderr, "[warning] failed to save user message: %v\n", err)
@@ -436,7 +519,12 @@ func runChatMode(
 	}
 }
 
-func executeWithFallback(modelOverride, remoteURL string, localOnly, remoteOnly bool, messages []chat.Message, logf func(string), profile *agent.AgentProfile) (string, error) {
+type executionResult struct {
+	reply  string
+	source string // "local", "remote", or "fallback"
+}
+
+func executeWithFallback(modelOverride, remoteURL string, localOnly, remoteOnly bool, messages []chat.Message, logf func(string), profile *agent.AgentProfile) (executionResult, error) {
 	// Determine local model to use
 	localModel := modelOverride
 	if profile != nil && modelOverride == "" {
@@ -445,14 +533,16 @@ func executeWithFallback(modelOverride, remoteURL string, localOnly, remoteOnly 
 
 	if localOnly {
 		logf("execution path: local ollama (forced)")
-		return (&executor.OllamaExecutor{Model: localModel, Log: nil}).Execute(messages)
+		reply, err := (&executor.OllamaExecutor{Model: localModel, Log: nil}).Execute(messages)
+		return executionResult{reply: reply, source: "local"}, err
 	}
 	if remoteURL == "" {
 		if remoteOnly {
-			return "", fmt.Errorf("remote execution requested but no remote is configured")
+			return executionResult{}, fmt.Errorf("remote execution requested but no remote is configured")
 		}
 		logf("execution path: local ollama (no remote configured)")
-		return (&executor.OllamaExecutor{Model: localModel, Log: nil}).Execute(messages)
+		reply, err := (&executor.OllamaExecutor{Model: localModel, Log: nil}).Execute(messages)
+		return executionResult{reply: reply, source: "local"}, err
 	}
 
 	httpExec := executor.NewHTTPExecutor(remoteURL, 30*time.Second, nil)
@@ -467,22 +557,23 @@ func executeWithFallback(modelOverride, remoteURL string, localOnly, remoteOnly 
 	if ok {
 		reply, err := httpExec.Execute(messages)
 		if err == nil {
-			return reply, nil
+			return executionResult{reply: reply, source: "remote"}, nil
 		}
 		if remoteOnly {
-			return "", err
+			return executionResult{}, err
 		}
 		logf("using local")
 	} else if healthErr != nil {
 		if remoteOnly {
-			return "", fmt.Errorf("remote execution requested but health check failed: %v", healthErr)
+			return executionResult{}, fmt.Errorf("remote execution requested but health check failed: %v", healthErr)
 		}
 		logf("using local")
 	} else if remoteOnly {
-		return "", fmt.Errorf("remote execution requested but health check failed")
+		return executionResult{}, fmt.Errorf("remote execution requested but health check failed")
 	}
 
-	return (&executor.OllamaExecutor{Model: localModel, Log: nil}).Execute(messages)
+	reply, err := (&executor.OllamaExecutor{Model: localModel, Log: nil}).Execute(messages)
+	return executionResult{reply: reply, source: "fallback"}, err
 }
 
 // runContextsCommand handles the 'contexts' subcommand
@@ -646,8 +737,18 @@ func runTUICommand(args []string) error {
 	logf := func(msg string) {
 		// Silent logging for TUI
 	}
-	executeFn := func(messages []chat.Message) (string, error) {
-		return executeWithFallback(modelOverride, remoteURL, localOnly, remoteOnly, messages, logf, profile)
+	executeFn := func(messages []chat.Message) (tui.ExecutionResult, error) {
+		result, err := executeWithFallback(modelOverride, remoteURL, localOnly, remoteOnly, messages, logf, profile)
+		if err != nil {
+			return tui.ExecutionResult{}, err
+		}
+		return tui.ExecutionResult{Reply: result.reply, Source: result.source}, nil
+	}
+
+	// Determine agent name for display
+	currentAgent := "default"
+	if agentProfile != "" {
+		currentAgent = agentProfile
 	}
 
 	// Run TUI
@@ -661,6 +762,8 @@ func runTUICommand(args []string) error {
 		RemoteURL:     remoteURL,
 		LocalOnly:     localOnly,
 		RemoteOnly:    remoteOnly,
+		AgentName:     currentAgent,
+		AgentProfile:  profile,
 		ExecuteFn:     executeFn,
 	})
 }

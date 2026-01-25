@@ -1,7 +1,7 @@
 
 # Binaries
 /sidekick
-sidekick
+/sidekick.exe
 *.exe
 *.exe~
 *.dll
@@ -35,3 +35,6 @@ Thumbs.db
 
 # Secrets (never commit)
 secrets.json
+
+# Claude Code artifacts
+.claude/

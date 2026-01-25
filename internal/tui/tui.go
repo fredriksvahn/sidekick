@@ -12,6 +12,11 @@ import (
 	"github.com/earlysvahn/sidekick/internal/store"
 )
 
+type ExecutionResult struct {
+	Reply  string
+	Source string
+}
+
 type Config struct {
 	ContextName   string
 	SystemPrompt  string
@@ -22,22 +27,28 @@ type Config struct {
 	RemoteURL     string
 	LocalOnly     bool
 	RemoteOnly    bool
-	ExecuteFn     func(messages []chat.Message) (string, error)
+	AgentName     string
+	AgentProfile  interface{} // Will hold *agent.AgentProfile
+	ExecuteFn     func(messages []chat.Message) (ExecutionResult, error)
 }
 
 type model struct {
-	config       Config
-	viewport     viewport.Model
-	textarea     textarea.Model
-	messages     []store.Message
-	waiting      bool
-	err          error
-	width        int
-	height       int
+	config         Config
+	viewport       viewport.Model
+	textarea       textarea.Model
+	messages       []store.Message
+	waiting        bool
+	err            error
+	width          int
+	height         int
+	currentAgent   string
+	currentProfile interface{}
+	lastSource     string
 }
 
 type responseMsg struct {
 	content string
+	source  string
 	err     error
 }
 
@@ -57,12 +68,21 @@ func newModel(cfg Config) model {
 	vp := viewport.New(80, 20)
 	vp.SetContent("")
 
+	// Set default agent if not provided
+	agentName := cfg.AgentName
+	if agentName == "" {
+		agentName = "default"
+	}
+
 	m := model{
-		config:   cfg,
-		viewport: vp,
-		textarea: ta,
-		messages: cfg.History,
-		waiting:  false,
+		config:         cfg,
+		viewport:       vp,
+		textarea:       ta,
+		messages:       cfg.History,
+		waiting:        false,
+		currentAgent:   agentName,
+		currentProfile: cfg.AgentProfile,
+		lastSource:     "",
 	}
 
 	return m
@@ -92,6 +112,28 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			userInput := strings.TrimSpace(m.textarea.Value())
 			if userInput == "" {
+				return m, nil
+			}
+
+			// Check for /agent command
+			if strings.HasPrefix(userInput, "/agent ") {
+				newAgent := strings.TrimSpace(strings.TrimPrefix(userInput, "/agent"))
+				// Note: We can't import agent package here without circular dependency
+				// For now, just update the agent name - the profile switching
+				// will be handled in main.go
+				m.currentAgent = newAgent
+				m.textarea.Reset()
+
+				// Add a system message about the switch
+				now := time.Now().UTC()
+				sysMsg := store.Message{
+					Role:    "system",
+					Content: fmt.Sprintf("Agent switched to: %s", newAgent),
+					Time:    now,
+				}
+				m.messages = append(m.messages, sysMsg)
+				m.viewport.SetContent(m.renderMessages())
+				m.viewport.GotoBottom()
 				return m, nil
 			}
 
@@ -132,6 +174,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				Content: msg.content,
 				Time:    now,
 			}
+			// Store execution source
+			m.lastSource = msg.source
 		}
 
 		m.messages = append(m.messages, assistantMsg)
@@ -168,7 +212,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) View() string {
-	header := fmt.Sprintf("Context: %s", m.config.ContextName)
+	header := fmt.Sprintf("Context: %s | Agent: %s", m.config.ContextName, m.currentAgent)
 	if m.config.SystemPrompt != "" {
 		header += fmt.Sprintf(" | System: %s", m.config.SystemPrompt)
 	}
@@ -178,6 +222,10 @@ func (m model) View() string {
 	if m.waiting {
 		footer += "Waiting for response...\n"
 	} else {
+		// Show last execution source if available
+		if m.lastSource != "" {
+			footer += fmt.Sprintf("(last source: %s)\n", m.lastSource)
+		}
 		footer += m.textarea.View()
 	}
 
@@ -221,7 +269,10 @@ func (m model) executeChat(userMsg store.Message) tea.Cmd {
 		}
 
 		// Execute
-		reply, err := m.config.ExecuteFn(messages)
-		return responseMsg{content: reply, err: err}
+		result, err := m.config.ExecuteFn(messages)
+		if err != nil {
+			return responseMsg{content: "", source: "", err: err}
+		}
+		return responseMsg{content: result.Reply, source: result.Source, err: nil}
 	}
 }
