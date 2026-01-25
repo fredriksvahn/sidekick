@@ -71,6 +71,7 @@ func main() {
 
 	flag.StringVar(&modelOverride, "model", "", "force a specific Ollama model")
 	flag.StringVar(&contextName, "context", "misc", "context name")
+	flag.StringVar(&contextName, "ctx", "misc", "context name (alias for -context)")
 	flag.IntVar(&historyLimit, "history", 4, "number of prior messages to include")
 	flag.StringVar(&systemPrompt, "system", "", "system prompt for this context")
 	flag.BoolVar(&serve, "serve", false, "run HTTP server")
@@ -207,6 +208,7 @@ func runChatCommand(args []string) error {
 
 	fs.StringVar(&modelOverride, "model", "", "force a specific Ollama model")
 	fs.StringVar(&contextName, "context", "misc", "context name")
+	fs.StringVar(&contextName, "ctx", "misc", "context name (alias for -context)")
 	fs.IntVar(&historyLimit, "history", 4, "number of prior messages to include")
 	fs.StringVar(&systemPrompt, "system", "", "system prompt for this context")
 	fs.BoolVar(&localOnly, "local", false, "force local Ollama execution")
@@ -447,6 +449,7 @@ func runHistoryCommand(args []string) error {
 	var contextName string
 	var storageBackend string
 	fs.StringVar(&contextName, "context", "", "context name (required)")
+	fs.StringVar(&contextName, "ctx", "", "context name (alias for -context)")
 	fs.StringVar(&storageBackend, "storage", "file", "storage backend (file|sqlite)")
 
 	if err := fs.Parse(args); err != nil {
@@ -501,6 +504,7 @@ func runTUICommand(args []string) error {
 
 	fs.StringVar(&modelOverride, "model", "", "force a specific Ollama model")
 	fs.StringVar(&contextName, "context", "misc", "context name")
+	fs.StringVar(&contextName, "ctx", "misc", "context name (alias for -context)")
 	fs.IntVar(&historyLimit, "history", 4, "number of prior messages to include")
 	fs.StringVar(&systemPrompt, "system", "", "system prompt for this context")
 	fs.BoolVar(&localOnly, "local", false, "force local Ollama execution")
