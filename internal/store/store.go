@@ -24,6 +24,8 @@ type ContextHistory struct {
 type HistoryStore interface {
 	Load(context string, limit int) ([]Message, error)
 	Append(context string, msg Message) error
+	LoadContext(context string) (ContextHistory, error)
+	SaveContext(context string, h ContextHistory) error
 }
 
 type FileStore struct {
