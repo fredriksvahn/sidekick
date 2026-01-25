@@ -21,11 +21,18 @@ type ContextHistory struct {
 	Messages []Message `json:"messages"`
 }
 
+type ContextInfo struct {
+	Name         string
+	MessageCount int
+	LastUsed     time.Time
+}
+
 type HistoryStore interface {
 	Load(context string, limit int) ([]Message, error)
 	Append(context string, msg Message) error
 	LoadContext(context string) (ContextHistory, error)
 	SaveContext(context string, h ContextHistory) error
+	ListContexts() ([]ContextInfo, error)
 }
 
 type FileStore struct {
@@ -106,4 +113,40 @@ func (s *FileStore) contextPath(context string) string {
 	name = strings.ReplaceAll(name, "/", "_")
 	name = strings.ReplaceAll(name, "\\", "_")
 	return filepath.Join(s.baseDir, name+".json")
+}
+
+func (s *FileStore) ListContexts() ([]ContextInfo, error) {
+	entries, err := os.ReadDir(s.baseDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return []ContextInfo{}, nil
+		}
+		return nil, err
+	}
+
+	var contexts []ContextInfo
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+
+		name := strings.TrimSuffix(entry.Name(), ".json")
+		h, err := s.LoadContext(name)
+		if err != nil {
+			continue
+		}
+
+		info := ContextInfo{
+			Name:         name,
+			MessageCount: len(h.Messages),
+		}
+
+		if len(h.Messages) > 0 {
+			info.LastUsed = h.Messages[len(h.Messages)-1].Time
+		}
+
+		contexts = append(contexts, info)
+	}
+
+	return contexts, nil
 }

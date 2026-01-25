@@ -18,12 +18,40 @@ import (
 	"github.com/earlysvahn/sidekick/internal/executor"
 	"github.com/earlysvahn/sidekick/internal/server"
 	"github.com/earlysvahn/sidekick/internal/store"
+	"github.com/earlysvahn/sidekick/internal/tui"
 )
 
 func main() {
 	// Check for chat subcommand
 	if len(os.Args) > 1 && os.Args[1] == "chat" {
 		if err := runChatCommand(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	// Check for contexts subcommand
+	if len(os.Args) > 1 && os.Args[1] == "contexts" {
+		if err := runContextsCommand(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	// Check for history subcommand
+	if len(os.Args) > 1 && os.Args[1] == "history" {
+		if err := runHistoryCommand(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	// Check for tui subcommand
+	if len(os.Args) > 1 && os.Args[1] == "tui" {
+		if err := runTUICommand(os.Args[2:]); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
@@ -60,7 +88,13 @@ func main() {
 	}
 
 	if serve {
-		if err := server.Run(modelOverride); err != nil {
+		// Instantiate storage for server
+		historyStore, err := createHistoryStore(storageBackend)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "[storage error]", err)
+			os.Exit(1)
+		}
+		if err := server.Run(modelOverride, historyStore); err != nil {
 			fmt.Fprintln(os.Stderr, "[server error]", err)
 			os.Exit(1)
 		}
@@ -70,6 +104,9 @@ func main() {
 	if flag.NArg() == 0 {
 		fmt.Println("Usage: sidekick [--model MODEL] \"your prompt\"")
 		fmt.Println("   or: sidekick chat [--context NAME]")
+		fmt.Println("   or: sidekick tui [--context NAME]")
+		fmt.Println("   or: sidekick contexts [--storage BACKEND]")
+		fmt.Println("   or: sidekick history --context NAME [--storage BACKEND]")
 		os.Exit(1)
 	}
 	rawPrompt := strings.Join(flag.Args(), " ")
@@ -124,8 +161,14 @@ func createHistoryStore(backend string) (store.HistoryStore, error) {
 	case "sqlite":
 		dbPath := filepath.Join(config.Dir(), "sidekick.db")
 		return store.NewSQLiteStore(dbPath)
+	case "postgres":
+		dsn := os.Getenv("SIDEKICK_POSTGRES_DSN")
+		if dsn == "" {
+			return nil, fmt.Errorf("SIDEKICK_POSTGRES_DSN environment variable is required for postgres storage")
+		}
+		return store.NewPostgresStore(dsn)
 	default:
-		return nil, fmt.Errorf("unknown storage backend: %s (must be 'file' or 'sqlite')", backend)
+		return nil, fmt.Errorf("unknown storage backend: %s (must be 'file', 'sqlite', or 'postgres')", backend)
 	}
 }
 
@@ -359,4 +402,160 @@ func executeWithFallback(modelOverride, remoteURL string, localOnly, remoteOnly 
 	}
 
 	return (&executor.OllamaExecutor{Model: modelOverride, Log: nil}).Execute(messages)
+}
+
+// runContextsCommand handles the 'contexts' subcommand
+func runContextsCommand(args []string) error {
+	fs := flag.NewFlagSet("contexts", flag.ExitOnError)
+	var storageBackend string
+	fs.StringVar(&storageBackend, "storage", "file", "storage backend (file|sqlite)")
+
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	// Instantiate storage
+	historyStore, err := createHistoryStore(storageBackend)
+	if err != nil {
+		return fmt.Errorf("storage error: %w", err)
+	}
+
+	// List contexts
+	contexts, err := historyStore.ListContexts()
+	if err != nil {
+		return fmt.Errorf("list contexts: %w", err)
+	}
+
+	// Print header
+	fmt.Printf("%-12s  %-10s  %s\n", "NAME", "MESSAGES", "LAST_USED")
+
+	// Print each context
+	for _, ctx := range contexts {
+		lastUsed := "-"
+		if !ctx.LastUsed.IsZero() {
+			lastUsed = ctx.LastUsed.Format("2006-01-02 15:04")
+		}
+		fmt.Printf("%-12s  %-10d  %s\n", ctx.Name, ctx.MessageCount, lastUsed)
+	}
+
+	return nil
+}
+
+// runHistoryCommand handles the 'history' subcommand
+func runHistoryCommand(args []string) error {
+	fs := flag.NewFlagSet("history", flag.ExitOnError)
+	var contextName string
+	var storageBackend string
+	fs.StringVar(&contextName, "context", "", "context name (required)")
+	fs.StringVar(&storageBackend, "storage", "file", "storage backend (file|sqlite)")
+
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	// Validate required flag
+	if contextName == "" {
+		return fmt.Errorf("--context is required")
+	}
+
+	// Instantiate storage
+	historyStore, err := createHistoryStore(storageBackend)
+	if err != nil {
+		return fmt.Errorf("storage error: %w", err)
+	}
+
+	// Load context
+	ctxHist, err := historyStore.LoadContext(contextName)
+	if err != nil {
+		return fmt.Errorf("load context: %w", err)
+	}
+
+	// Check if context exists (empty context with no system prompt means it doesn't exist)
+	if ctxHist.System == "" && len(ctxHist.Messages) == 0 {
+		return fmt.Errorf("context '%s' does not exist", contextName)
+	}
+
+	// Print system prompt if present
+	if ctxHist.System != "" {
+		fmt.Printf("[system] %s\n", ctxHist.System)
+	}
+
+	// Print all messages in chronological order
+	for _, msg := range ctxHist.Messages {
+		fmt.Printf("[%s] %s\n", msg.Role, msg.Content)
+	}
+
+	return nil
+}
+
+// runTUICommand handles the 'tui' subcommand
+func runTUICommand(args []string) error {
+	fs := flag.NewFlagSet("tui", flag.ExitOnError)
+	var modelOverride string
+	var contextName string
+	var historyLimit int
+	var systemPrompt string
+	var localOnly bool
+	var remoteOnly bool
+	var storageBackend string
+
+	fs.StringVar(&modelOverride, "model", "", "force a specific Ollama model")
+	fs.StringVar(&contextName, "context", "misc", "context name")
+	fs.IntVar(&historyLimit, "history", 4, "number of prior messages to include")
+	fs.StringVar(&systemPrompt, "system", "", "system prompt for this context")
+	fs.BoolVar(&localOnly, "local", false, "force local Ollama execution")
+	fs.BoolVar(&remoteOnly, "remote", false, "force remote execution")
+	fs.StringVar(&storageBackend, "storage", "file", "storage backend (file|sqlite)")
+
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	// Instantiate storage
+	historyStore, err := createHistoryStore(storageBackend)
+	if err != nil {
+		return fmt.Errorf("storage error: %w", err)
+	}
+
+	// Load remote URL
+	remoteURL, err := config.LoadRemote()
+	if err != nil {
+		return fmt.Errorf("config error: %w", err)
+	}
+
+	// Load context
+	ctxHist, err := historyStore.LoadContext(contextName)
+	if err != nil {
+		return fmt.Errorf("load context: %w", err)
+	}
+
+	// Apply system prompt override if provided
+	if systemPrompt != "" {
+		ctxHist.System = systemPrompt
+		if err := historyStore.SaveContext(contextName, ctxHist); err != nil {
+			return fmt.Errorf("save system prompt: %w", err)
+		}
+	}
+
+	// Create execute function that wraps executeWithFallback
+	logf := func(msg string) {
+		// Silent logging for TUI
+	}
+	executeFn := func(messages []chat.Message) (string, error) {
+		return executeWithFallback(modelOverride, remoteURL, localOnly, remoteOnly, messages, logf)
+	}
+
+	// Run TUI
+	return tui.Run(tui.Config{
+		ContextName:   contextName,
+		SystemPrompt:  ctxHist.System,
+		History:       ctxHist.Messages,
+		HistoryStore:  historyStore,
+		HistoryLimit:  historyLimit,
+		ModelOverride: modelOverride,
+		RemoteURL:     remoteURL,
+		LocalOnly:     localOnly,
+		RemoteOnly:    remoteOnly,
+		ExecuteFn:     executeFn,
+	})
 }

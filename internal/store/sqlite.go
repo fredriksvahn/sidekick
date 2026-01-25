@@ -269,6 +269,49 @@ func (s *SQLiteStore) getOrCreateContextTx(tx *sql.Tx, name string) (int64, erro
 	return result.LastInsertId()
 }
 
+// ListContexts returns information about all contexts
+func (s *SQLiteStore) ListContexts() ([]ContextInfo, error) {
+	rows, err := s.db.Query(`
+		SELECT
+			c.name,
+			COUNT(m.id) as message_count,
+			MAX(m.created_at) as last_used
+		FROM contexts c
+		LEFT JOIN messages m ON c.id = m.context_id
+		GROUP BY c.id, c.name
+		ORDER BY c.name
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("query contexts: %w", err)
+	}
+	defer rows.Close()
+
+	var contexts []ContextInfo
+	for rows.Next() {
+		var info ContextInfo
+		var lastUsed sql.NullString
+
+		if err := rows.Scan(&info.Name, &info.MessageCount, &lastUsed); err != nil {
+			return nil, fmt.Errorf("scan context info: %w", err)
+		}
+
+		if lastUsed.Valid {
+			info.LastUsed, err = parseTimestamp(lastUsed.String)
+			if err != nil {
+				return nil, fmt.Errorf("parse last used: %w", err)
+			}
+		}
+
+		contexts = append(contexts, info)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate contexts: %w", err)
+	}
+
+	return contexts, nil
+}
+
 // parseTimestamp handles both SQLite default format and custom formats
 func parseTimestamp(s string) (time.Time, error) {
 	t, err := time.Parse(sqliteTimeFormat, s)
