@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/earlysvahn/sidekick/internal/agent"
 	"github.com/earlysvahn/sidekick/internal/chat"
 	"github.com/earlysvahn/sidekick/internal/config"
 	"github.com/earlysvahn/sidekick/internal/executor"
@@ -58,6 +59,15 @@ func main() {
 		return
 	}
 
+	// Check for sync subcommand
+	if len(os.Args) > 1 && os.Args[1] == "sync" {
+		if err := runSyncCommand(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	// One-shot mode
 	var modelOverride string
 	var contextName string
@@ -68,12 +78,14 @@ func main() {
 	var remoteOnly bool
 	var quiet bool
 	var storageBackend string
+	var agentProfile string
 
 	flag.StringVar(&modelOverride, "model", "", "force a specific Ollama model")
 	flag.StringVar(&contextName, "context", "misc", "context name")
 	flag.StringVar(&contextName, "ctx", "misc", "context name (alias for -context)")
 	flag.IntVar(&historyLimit, "history", 4, "number of prior messages to include")
 	flag.StringVar(&systemPrompt, "system", "", "system prompt for this context")
+	flag.StringVar(&agentProfile, "agent", "", "agent profile (code, golang-dev, etc)")
 	flag.BoolVar(&serve, "serve", false, "run HTTP server")
 	flag.BoolVar(&localOnly, "local", false, "force local Ollama execution")
 	flag.BoolVar(&remoteOnly, "remote", false, "force remote execution")
@@ -86,6 +98,29 @@ func main() {
 			return
 		}
 		fmt.Fprintf(os.Stderr, "[sidekick] %s\n", msg)
+	}
+
+	// Apply agent profile if specified
+	if agentProfile != "" {
+		profile := agent.GetProfile(agentProfile)
+		if profile == nil {
+			fmt.Fprintf(os.Stderr, "Unknown agent profile: %s\n", agentProfile)
+			fmt.Fprintf(os.Stderr, "Available profiles: %s\n", strings.Join(agent.ListProfiles(), ", "))
+			os.Exit(1)
+		}
+		// Apply profile defaults only if not explicitly overridden
+		if modelOverride == "" {
+			if localOnly {
+				modelOverride = profile.LocalModel
+			} else if remoteOnly {
+				modelOverride = profile.RemoteModel
+			}
+			// If neither local nor remote is forced, leave modelOverride empty
+			// and let executeWithFallback use profile models
+		}
+		if systemPrompt == "" {
+			systemPrompt = profile.SystemPrompt
+		}
 	}
 
 	if serve {
@@ -108,6 +143,7 @@ func main() {
 		fmt.Println("   or: sidekick tui [--context NAME]")
 		fmt.Println("   or: sidekick contexts [--storage BACKEND]")
 		fmt.Println("   or: sidekick history --context NAME [--storage BACKEND]")
+		fmt.Println("   or: sidekick sync push|pull")
 		os.Exit(1)
 	}
 	rawPrompt := strings.Join(flag.Args(), " ")
@@ -142,7 +178,13 @@ func main() {
 		os.Exit(1)
 	}
 
-	reply, err := executeWithFallback(modelOverride, remoteURL, localOnly, remoteOnly, messages, logf)
+	// Get agent profile for execution
+	var profile *agent.AgentProfile
+	if agentProfile != "" {
+		profile = agent.GetProfile(agentProfile)
+	}
+
+	reply, err := executeWithFallback(modelOverride, remoteURL, localOnly, remoteOnly, messages, logf, profile)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "[executor error]", err)
 		os.Exit(1)
@@ -205,12 +247,14 @@ func runChatCommand(args []string) error {
 	var remoteOnly bool
 	var quiet bool
 	var storageBackend string
+	var agentProfile string
 
 	fs.StringVar(&modelOverride, "model", "", "force a specific Ollama model")
 	fs.StringVar(&contextName, "context", "misc", "context name")
 	fs.StringVar(&contextName, "ctx", "misc", "context name (alias for -context)")
 	fs.IntVar(&historyLimit, "history", 4, "number of prior messages to include")
 	fs.StringVar(&systemPrompt, "system", "", "system prompt for this context")
+	fs.StringVar(&agentProfile, "agent", "", "agent profile (code, golang-dev, etc)")
 	fs.BoolVar(&localOnly, "local", false, "force local Ollama execution")
 	fs.BoolVar(&remoteOnly, "remote", false, "force remote execution")
 	fs.BoolVar(&quiet, "quiet", false, "suppress non-error logs")
@@ -225,6 +269,26 @@ func runChatCommand(args []string) error {
 			return
 		}
 		fmt.Fprintf(os.Stderr, "[sidekick] %s\n", msg)
+	}
+
+	// Apply agent profile if specified
+	var profile *agent.AgentProfile
+	if agentProfile != "" {
+		profile = agent.GetProfile(agentProfile)
+		if profile == nil {
+			return fmt.Errorf("unknown agent profile: %s\nAvailable profiles: %s", agentProfile, strings.Join(agent.ListProfiles(), ", "))
+		}
+		// Apply profile defaults
+		if modelOverride == "" {
+			if localOnly {
+				modelOverride = profile.LocalModel
+			} else if remoteOnly {
+				modelOverride = profile.RemoteModel
+			}
+		}
+		if systemPrompt == "" {
+			systemPrompt = profile.SystemPrompt
+		}
 	}
 
 	// Instantiate storage
@@ -264,6 +328,7 @@ func runChatCommand(args []string) error {
 		localOnly,
 		remoteOnly,
 		logf,
+		profile,
 	)
 }
 
@@ -279,6 +344,7 @@ func runChatMode(
 	localOnly bool,
 	remoteOnly bool,
 	logf func(string),
+	profile *agent.AgentProfile,
 ) error {
 	// Setup signal handling with context
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -343,7 +409,7 @@ func runChatMode(
 		messages := buildMessages(system, history, historyLimit, input)
 
 		// Execute
-		reply, err := executeWithFallback(modelOverride, remoteURL, localOnly, remoteOnly, messages, logf)
+		reply, err := executeWithFallback(modelOverride, remoteURL, localOnly, remoteOnly, messages, logf, profile)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "[error] %v\n\n", err)
 			continue
@@ -370,20 +436,33 @@ func runChatMode(
 	}
 }
 
-func executeWithFallback(modelOverride, remoteURL string, localOnly, remoteOnly bool, messages []chat.Message, logf func(string)) (string, error) {
+func executeWithFallback(modelOverride, remoteURL string, localOnly, remoteOnly bool, messages []chat.Message, logf func(string), profile *agent.AgentProfile) (string, error) {
+	// Determine local model to use
+	localModel := modelOverride
+	if profile != nil && modelOverride == "" {
+		localModel = profile.LocalModel
+	}
+
 	if localOnly {
 		logf("execution path: local ollama (forced)")
-		return (&executor.OllamaExecutor{Model: modelOverride, Log: nil}).Execute(messages)
+		return (&executor.OllamaExecutor{Model: localModel, Log: nil}).Execute(messages)
 	}
 	if remoteURL == "" {
 		if remoteOnly {
 			return "", fmt.Errorf("remote execution requested but no remote is configured")
 		}
 		logf("execution path: local ollama (no remote configured)")
-		return (&executor.OllamaExecutor{Model: modelOverride, Log: nil}).Execute(messages)
+		return (&executor.OllamaExecutor{Model: localModel, Log: nil}).Execute(messages)
 	}
 
 	httpExec := executor.NewHTTPExecutor(remoteURL, 30*time.Second, nil)
+
+	// If using profile, pass the remote model to HTTP executor
+	if profile != nil && modelOverride == "" {
+		// For now, HTTPExecutor doesn't support model selection
+		// This is handled by the remote server's default
+	}
+
 	ok, healthErr := httpExec.Available()
 	if ok {
 		reply, err := httpExec.Execute(messages)
@@ -403,7 +482,7 @@ func executeWithFallback(modelOverride, remoteURL string, localOnly, remoteOnly 
 		return "", fmt.Errorf("remote execution requested but health check failed")
 	}
 
-	return (&executor.OllamaExecutor{Model: modelOverride, Log: nil}).Execute(messages)
+	return (&executor.OllamaExecutor{Model: localModel, Log: nil}).Execute(messages)
 }
 
 // runContextsCommand handles the 'contexts' subcommand
@@ -501,18 +580,40 @@ func runTUICommand(args []string) error {
 	var localOnly bool
 	var remoteOnly bool
 	var storageBackend string
+	var agentProfile string
 
 	fs.StringVar(&modelOverride, "model", "", "force a specific Ollama model")
 	fs.StringVar(&contextName, "context", "misc", "context name")
 	fs.StringVar(&contextName, "ctx", "misc", "context name (alias for -context)")
 	fs.IntVar(&historyLimit, "history", 4, "number of prior messages to include")
 	fs.StringVar(&systemPrompt, "system", "", "system prompt for this context")
+	fs.StringVar(&agentProfile, "agent", "", "agent profile (code, golang-dev, etc)")
 	fs.BoolVar(&localOnly, "local", false, "force local Ollama execution")
 	fs.BoolVar(&remoteOnly, "remote", false, "force remote execution")
 	fs.StringVar(&storageBackend, "storage", "file", "storage backend (file|sqlite)")
 
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+
+	// Apply agent profile if specified
+	var profile *agent.AgentProfile
+	if agentProfile != "" {
+		profile = agent.GetProfile(agentProfile)
+		if profile == nil {
+			return fmt.Errorf("unknown agent profile: %s\nAvailable profiles: %s", agentProfile, strings.Join(agent.ListProfiles(), ", "))
+		}
+		// Apply profile defaults
+		if modelOverride == "" {
+			if localOnly {
+				modelOverride = profile.LocalModel
+			} else if remoteOnly {
+				modelOverride = profile.RemoteModel
+			}
+		}
+		if systemPrompt == "" {
+			systemPrompt = profile.SystemPrompt
+		}
 	}
 
 	// Instantiate storage
@@ -546,7 +647,7 @@ func runTUICommand(args []string) error {
 		// Silent logging for TUI
 	}
 	executeFn := func(messages []chat.Message) (string, error) {
-		return executeWithFallback(modelOverride, remoteURL, localOnly, remoteOnly, messages, logf)
+		return executeWithFallback(modelOverride, remoteURL, localOnly, remoteOnly, messages, logf, profile)
 	}
 
 	// Run TUI
@@ -562,4 +663,142 @@ func runTUICommand(args []string) error {
 		RemoteOnly:    remoteOnly,
 		ExecuteFn:     executeFn,
 	})
+}
+
+// runSyncCommand handles the 'sync' subcommand
+func runSyncCommand(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("sync requires a direction: push or pull")
+	}
+
+	direction := args[0]
+	if direction != "push" && direction != "pull" {
+		return fmt.Errorf("sync direction must be 'push' or 'pull', got: %s", direction)
+	}
+
+	// Create both storage backends
+	dbPath := filepath.Join(config.Dir(), "sidekick.db")
+	sqliteStore, err := store.NewSQLiteStore(dbPath)
+	if err != nil {
+		return fmt.Errorf("failed to open SQLite: %w", err)
+	}
+
+	dsn := os.Getenv("SIDEKICK_POSTGRES_DSN")
+	if dsn == "" {
+		return fmt.Errorf("SIDEKICK_POSTGRES_DSN environment variable is required for sync")
+	}
+	postgresStore, err := store.NewPostgresStore(dsn)
+	if err != nil {
+		return fmt.Errorf("failed to open Postgres: %w", err)
+	}
+
+	var source, target store.HistoryStore
+	var sourceName, targetName string
+
+	if direction == "push" {
+		source = sqliteStore
+		target = postgresStore
+		sourceName = "SQLite"
+		targetName = "Postgres"
+	} else {
+		source = postgresStore
+		target = sqliteStore
+		sourceName = "Postgres"
+		targetName = "SQLite"
+	}
+
+	return performSync(source, target, sourceName, targetName)
+}
+
+// performSync syncs contexts and messages from source to target
+func performSync(source, target store.HistoryStore, sourceName, targetName string) error {
+	fmt.Printf("Syncing from %s to %s...\n\n", sourceName, targetName)
+
+	// Load all contexts from source
+	sourceContexts, err := source.ListContexts()
+	if err != nil {
+		return fmt.Errorf("failed to list source contexts: %w", err)
+	}
+
+	contextsSynced := 0
+	messagesInserted := 0
+	var errors []string
+
+	for _, ctxInfo := range sourceContexts {
+		// Load full context from source
+		sourceCtx, err := source.LoadContext(ctxInfo.Name)
+		if err != nil {
+			errors = append(errors, fmt.Sprintf("failed to load context %s: %v", ctxInfo.Name, err))
+			continue
+		}
+
+		// Upsert context in target (this will create if not exists, or update system prompt)
+		if err := target.SaveContext(ctxInfo.Name, sourceCtx); err != nil {
+			errors = append(errors, fmt.Sprintf("failed to save context %s: %v", ctxInfo.Name, err))
+			continue
+		}
+
+		// Load target context to see what messages already exist
+		targetCtx, err := target.LoadContext(ctxInfo.Name)
+		if err != nil {
+			errors = append(errors, fmt.Sprintf("failed to load target context %s: %v", ctxInfo.Name, err))
+			continue
+		}
+
+		// Find messages that don't exist in target
+		newMessages := findNewMessages(sourceCtx.Messages, targetCtx.Messages)
+
+		// Insert new messages
+		for _, msg := range newMessages {
+			if err := target.Append(ctxInfo.Name, msg); err != nil {
+				errors = append(errors, fmt.Sprintf("failed to append message to %s: %v", ctxInfo.Name, err))
+				continue
+			}
+			messagesInserted++
+		}
+
+		contextsSynced++
+	}
+
+	// Print summary
+	fmt.Printf("Sync complete!\n")
+	fmt.Printf("  Contexts synced: %d\n", contextsSynced)
+	fmt.Printf("  Messages inserted: %d\n", messagesInserted)
+
+	if len(errors) > 0 {
+		fmt.Printf("  Errors: %d\n\n", len(errors))
+		for _, e := range errors {
+			fmt.Printf("  - %s\n", e)
+		}
+		return fmt.Errorf("sync completed with errors")
+	}
+
+	return nil
+}
+
+// findNewMessages returns messages from source that don't exist in target
+// Messages are matched by: role, content, and created_at timestamp
+func findNewMessages(sourceMessages, targetMessages []store.Message) []store.Message {
+	// Build a set of existing messages for fast lookup
+	existing := make(map[string]bool)
+	for _, msg := range targetMessages {
+		key := messageKey(msg)
+		existing[key] = true
+	}
+
+	// Find messages that don't exist in target
+	var newMessages []store.Message
+	for _, msg := range sourceMessages {
+		key := messageKey(msg)
+		if !existing[key] {
+			newMessages = append(newMessages, msg)
+		}
+	}
+
+	return newMessages
+}
+
+// messageKey generates a unique key for a message based on role, content, and timestamp
+func messageKey(msg store.Message) string {
+	return fmt.Sprintf("%s|%s|%s", msg.Role, msg.Content, msg.Time.Format(time.RFC3339Nano))
 }
