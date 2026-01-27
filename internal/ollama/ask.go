@@ -15,6 +15,7 @@ type chatReq struct {
 	Model    string         `json:"model"`
 	Messages []chat.Message `json:"messages"`
 	Stream   bool           `json:"stream"`
+	Options  map[string]int `json:"options,omitempty"`
 }
 
 type chatResp struct {
@@ -23,10 +24,15 @@ type chatResp struct {
 }
 
 func Ask(model string, messages []chat.Message) (string, error) {
+	return AskWithOptions(model, messages, nil)
+}
+
+func AskWithOptions(model string, messages []chat.Message, options map[string]int) (string, error) {
 	req := chatReq{
 		Model:    model,
 		Messages: messages,
 		Stream:   false,
+		Options:  options,
 	}
 	b, err := json.Marshal(req)
 	if err != nil {

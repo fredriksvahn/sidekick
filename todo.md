@@ -1,6 +1,6 @@
 # Ollama Model Usage Guide
 
-## Model Assignments
+## 🎯 Model Assignments
 
 ### **qwen2.5:14b** (Default Workhorse)
 - General questions & research
@@ -41,12 +41,12 @@
 - RAG for homelab wikis
 - Code similarity search
 
-## Concurrent Combinations
+## 🔄 Concurrent Combinations
 - **Vision + 7b**: Screenshot debugging
 - **Aya + 7b**: Spanish practice while coding
 - **14b solo**: Max quality for complex tasks
 
-## TODO: Agent Setup
+## 📝 TODO: Agent Setup
 - [ ] Create coding agent (DeepSeek primary, Qwen fallback)
 - [ ] Spanish tutor agent (Aya with exercise templates)
 - [ ] Vision agent (auto-explain screenshots)
