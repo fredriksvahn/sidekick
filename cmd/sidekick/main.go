@@ -8,7 +8,6 @@ import (
 	"github.com/earlysvahn/sidekick/internal/agent"
 	"github.com/earlysvahn/sidekick/internal/db"
 	"github.com/earlysvahn/sidekick/internal/server"
-	_ "github.com/mattn/go-sqlite3"
 )
 
 func main() {

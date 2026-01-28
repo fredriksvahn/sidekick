@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 
 	"github.com/earlysvahn/sidekick/internal/config"
-	_ "github.com/mattn/go-sqlite3"
+	_ "modernc.org/sqlite"
 )
 
 // SQLitePath returns the path to the SQLite database file.
@@ -15,5 +15,5 @@ func SQLitePath() string {
 
 // OpenSQLite opens a connection to the SQLite database.
 func OpenSQLite() (*sql.DB, error) {
-	return sql.Open("sqlite3", SQLitePath())
+	return sql.Open("sqlite", SQLitePath())
 }
