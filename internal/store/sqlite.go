@@ -42,6 +42,8 @@ func initSchema(db *sql.DB) error {
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		name TEXT NOT NULL UNIQUE,
 		system_prompt TEXT,
+		agent TEXT,
+		verbosity INTEGER DEFAULT 2,
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 	);
 
@@ -59,7 +61,49 @@ func initSchema(db *sql.DB) error {
 	`
 
 	_, err := db.Exec(schema)
-	return err
+	if err != nil {
+		return err
+	}
+
+	if err := ensureContextColumn(db, "agent", "TEXT"); err != nil {
+		return err
+	}
+	if err := ensureContextColumn(db, "verbosity", "INTEGER DEFAULT 2"); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func ensureContextColumn(db *sql.DB, name, definition string) error {
+	rows, err := db.Query(`PRAGMA table_info(contexts)`)
+	if err != nil {
+		return fmt.Errorf("inspect contexts table: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var cid int
+		var colName string
+		var colType string
+		var notNull int
+		var dfltValue sql.NullString
+		var pk int
+		if err := rows.Scan(&cid, &colName, &colType, &notNull, &dfltValue, &pk); err != nil {
+			return fmt.Errorf("scan contexts columns: %w", err)
+		}
+		if colName == name {
+			return nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate contexts columns: %w", err)
+	}
+
+	if _, err := db.Exec(fmt.Sprintf(`ALTER TABLE contexts ADD COLUMN %s %s`, name, definition)); err != nil {
+		return fmt.Errorf("add contexts.%s: %w", name, err)
+	}
+	return nil
 }
 
 // Close closes the database connection
@@ -274,11 +318,13 @@ func (s *SQLiteStore) ListContexts() ([]ContextInfo, error) {
 	rows, err := s.db.Query(`
 		SELECT
 			c.name,
+			COALESCE(c.agent, ''),
+			COALESCE(c.verbosity, 2),
 			COUNT(m.id) as message_count,
 			MAX(m.created_at) as last_used
 		FROM contexts c
-		LEFT JOIN messages m ON c.id = m.context_id
-		GROUP BY c.id, c.name
+		JOIN messages m ON c.id = m.context_id
+		GROUP BY c.id, c.name, c.agent, c.verbosity
 		ORDER BY c.name
 	`)
 	if err != nil {
@@ -291,7 +337,7 @@ func (s *SQLiteStore) ListContexts() ([]ContextInfo, error) {
 		var info ContextInfo
 		var lastUsed sql.NullString
 
-		if err := rows.Scan(&info.Name, &info.MessageCount, &lastUsed); err != nil {
+		if err := rows.Scan(&info.Name, &info.Agent, &info.Verbosity, &info.MessageCount, &lastUsed); err != nil {
 			return nil, fmt.Errorf("scan context info: %w", err)
 		}
 

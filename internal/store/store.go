@@ -23,6 +23,8 @@ type ContextHistory struct {
 
 type ContextInfo struct {
 	Name         string
+	Agent        string
+	Verbosity    int
 	MessageCount int
 	LastUsed     time.Time
 }
@@ -133,6 +135,10 @@ func (s *FileStore) ListContexts() ([]ContextInfo, error) {
 		name := strings.TrimSuffix(entry.Name(), ".json")
 		h, err := s.LoadContext(name)
 		if err != nil {
+			continue
+		}
+
+		if len(h.Messages) == 0 {
 			continue
 		}
 

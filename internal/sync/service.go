@@ -35,12 +35,6 @@ func SyncContexts(source, target store.HistoryStore, sourceName, targetName stri
 			continue
 		}
 
-		// Upsert context in target (this will create if not exists, or update system prompt)
-		if err := target.SaveContext(ctxInfo.Name, sourceCtx); err != nil {
-			result.Errors = append(result.Errors, fmt.Sprintf("failed to save context %s: %v", ctxInfo.Name, err))
-			continue
-		}
-
 		// Load target context to see what messages already exist
 		targetCtx, err := target.LoadContext(ctxInfo.Name)
 		if err != nil {
@@ -58,6 +52,12 @@ func SyncContexts(source, target store.HistoryStore, sourceName, targetName stri
 				continue
 			}
 			result.MessagesInserted++
+		}
+
+		// Update system prompt after messages are ensured (avoids empty contexts).
+		if err := target.SaveContext(ctxInfo.Name, sourceCtx); err != nil {
+			result.Errors = append(result.Errors, fmt.Sprintf("failed to save context %s: %v", ctxInfo.Name, err))
+			continue
 		}
 
 		result.ContextsSynced++
