@@ -9,6 +9,10 @@ func Dir() string {
 	if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
 		return filepath.Join(xdg, "sidekick")
 	}
-	return filepath.Join(os.Getenv("HOME"), ".config", "sidekick")
+	home, err := os.UserHomeDir()
+	if err != nil {
+		home = os.Getenv("HOME") // fallback
+	}
+	return filepath.Join(home, ".config", "sidekick")
 }
 func File() string { return filepath.Join(Dir(), "config.json") }
