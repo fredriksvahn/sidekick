@@ -8,11 +8,24 @@ import (
 	"github.com/earlysvahn/sidekick/internal/agent"
 	"github.com/earlysvahn/sidekick/internal/db"
 	"github.com/earlysvahn/sidekick/internal/server"
+	"github.com/earlysvahn/sidekick/internal/store"
 )
 
 func main() {
-	// Initialize agent repository FIRST (must happen before any agent operations)
-	if err := initAgentRepository(); err != nil {
+	// Check if running in server mode FIRST
+	isServerMode := len(os.Args) > 1 && (os.Args[1] == "--serve" || os.Args[1] == "-serve")
+
+	if isServerMode {
+		// API mode: use Postgres for everything
+		if err := runServer(); err != nil {
+			fmt.Fprintln(os.Stderr, "[server error]", err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	// CLI mode: use SQLite for agents (offline-first)
+	if err := initCLIAgentRepository(); err != nil {
 		fmt.Fprintf(os.Stderr, "[agent init error] %v\n", err)
 		os.Exit(1)
 	}
@@ -56,12 +69,6 @@ func main() {
 				os.Exit(1)
 			}
 			return
-		case "--serve", "-serve":
-			if err := runServer(); err != nil {
-				fmt.Fprintln(os.Stderr, "[server error]", err)
-				os.Exit(1)
-			}
-			return
 		}
 	}
 
@@ -78,32 +85,65 @@ func main() {
 	}
 }
 
-// initAgentRepository initializes the agent database and sets the global repository.
-// This MUST be called early on startup before any agent operations.
-func initAgentRepository() error {
+// initCLIAgentRepository initializes SQLite-based agent repository for CLI mode.
+// CLI uses SQLite for offline-first operation.
+func initCLIAgentRepository() error {
 	database, err := db.OpenSQLite()
 	if err != nil {
 		return fmt.Errorf("open agent database: %w", err)
 	}
 
+	// Create SQLite repository
+	repo := agent.NewRepository(database)
+
 	// Migrate hardcoded agents to database (idempotent - only inserts if not exists)
-	if err := agent.MigrateHardcodedAgents(database); err != nil {
+	if err := agent.MigrateHardcodedAgents(repo); err != nil {
 		database.Close()
 		return fmt.Errorf("migrate agents: %w", err)
 	}
 
 	// Set global repository for agent loading
-	repo := agent.NewRepository(database)
 	agent.SetRepository(repo)
 
 	return nil
 }
 
-// runServer starts the HTTP server
+// runServer starts the HTTP server with Postgres storage.
+// API mode ALWAYS uses Postgres. Fails fast if not configured.
 func runServer() error {
-	historyStore, err := commands.CreateHistoryStore("file")
-	if err != nil {
-		return fmt.Errorf("storage error: %w", err)
+	// Require SIDEKICK_POSTGRES_DSN for API mode
+	dsn := os.Getenv("SIDEKICK_POSTGRES_DSN")
+	if dsn == "" {
+		return fmt.Errorf("SIDEKICK_POSTGRES_DSN environment variable is required for API mode")
 	}
+
+	// Open Postgres connection
+	postgresDB, err := db.OpenPostgres()
+	if err != nil {
+		return fmt.Errorf("failed to connect to Postgres: %w", err)
+	}
+
+	// Initialize Postgres history store (contexts/messages)
+	historyStore, err := store.NewPostgresStore(dsn)
+	if err != nil {
+		postgresDB.Close()
+		return fmt.Errorf("failed to initialize history store: %w", err)
+	}
+
+	// Initialize Postgres agent repository
+	agentRepo := agent.NewPostgresRepository(postgresDB)
+
+	// Migrate hardcoded agents to Postgres (idempotent)
+	if err := agent.MigrateHardcodedAgents(agentRepo); err != nil {
+		historyStore.Close()
+		postgresDB.Close()
+		return fmt.Errorf("failed to migrate agents: %w", err)
+	}
+
+	// Set global agent repository
+	agent.SetRepository(agentRepo)
+
+	fmt.Fprintf(os.Stderr, "[sidekick] using Postgres for storage\n")
+
 	return server.Run("", historyStore)
 }

@@ -1,19 +1,19 @@
 package agent
 
 import (
-	"database/sql"
 	"sync"
 )
 
 // Global repository instance (set by main on startup)
 var (
-	globalRepo *Repository
+	globalRepo AgentRepository
 	repoMu     sync.RWMutex
 )
 
 // SetRepository sets the global agent repository.
+// Accepts any AgentRepository implementation (SQLite or Postgres).
 // Must be called on startup before using GetProfile/ListProfiles.
-func SetRepository(repo *Repository) {
+func SetRepository(repo AgentRepository) {
 	repoMu.Lock()
 	defer repoMu.Unlock()
 	globalRepo = repo
@@ -80,9 +80,8 @@ func ListProfiles() []string {
 // MigrateHardcodedAgents populates the database with hardcoded profiles.
 // Only inserts agents that don't already exist in the database.
 // This is called once on first run to seed the database.
-func MigrateHardcodedAgents(db *sql.DB) error {
-	repo := NewRepository(db)
-
+// Accepts any AgentRepository implementation (SQLite or Postgres).
+func MigrateHardcodedAgents(repo AgentRepository) error {
 	// Ensure schema exists
 	if err := repo.InitSchema(); err != nil {
 		return err
