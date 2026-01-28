@@ -22,20 +22,20 @@ type ExecutionResult struct {
 }
 
 type Config struct {
-	ContextName      string
-	SystemPrompt     string
-	History          []store.Message
-	HistoryStore     store.HistoryStore
-	HistoryLimit     int
-	ModelOverride    string
-	RemoteURL        string
-	LocalOnly        bool
-	RemoteOnly       bool
-	AgentName        string
-	AgentProfile     interface{} // Will hold *agent.AgentProfile
-	AvailableAgents  []string
-	Verbosity        int
-	ExecuteFn        func(messages []chat.Message, verbosity int) (ExecutionResult, error)
+	ContextName     string
+	SystemPrompt    string
+	History         []store.Message
+	HistoryStore    store.HistoryStore
+	HistoryLimit    int
+	ModelOverride   string
+	RemoteURL       string
+	LocalOnly       bool
+	RemoteOnly      bool
+	AgentName       string
+	AgentProfile    interface{} // Will hold *agent.AgentProfile
+	AvailableAgents []string
+	Verbosity       int
+	ExecuteFn       func(messages []chat.Message, verbosity int) (ExecutionResult, error)
 }
 
 type model struct {
@@ -183,10 +183,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 				var newLevel int
 				_, err := fmt.Sscanf(levelStr, "%d", &newLevel)
-				if err != nil || newLevel < 0 || newLevel > 3 {
+				if err != nil || newLevel < 0 || newLevel > 4 {
 					sysMsg = store.Message{
 						Role:    "system",
-						Content: "Invalid verbosity level. Use 0 (minimal), 1 (concise), 2 (normal), or 3 (verbose)",
+						Content: "Invalid verbosity level. Use 0 (minimal), 1 (concise), 2 (normal), 3 (verbose), or 4 (very verbose)",
 						Time:    now,
 					}
 				} else {

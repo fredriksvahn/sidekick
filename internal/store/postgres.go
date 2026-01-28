@@ -40,6 +40,7 @@ func initPostgresSchema(db *sql.DB) error {
 		system_prompt TEXT,
 		agent TEXT,
 		verbosity INTEGER DEFAULT 2,
+		deleted_at TIMESTAMPTZ,
 		created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 	);
 
@@ -62,6 +63,7 @@ func initPostgresSchema(db *sql.DB) error {
 	_, err := db.Exec(`
 		ALTER TABLE contexts ADD COLUMN IF NOT EXISTS agent TEXT;
 		ALTER TABLE contexts ADD COLUMN IF NOT EXISTS verbosity INTEGER DEFAULT 2;
+		ALTER TABLE contexts ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;
 	`)
 	return err
 }
@@ -76,7 +78,7 @@ func (s *PostgresStore) LoadContext(contextName string) (ContextHistory, error) 
 	// Load system prompt
 	var systemPrompt sql.NullString
 	err := s.db.QueryRow(`
-		SELECT system_prompt FROM contexts WHERE name = $1
+		SELECT system_prompt FROM contexts WHERE name = $1 AND deleted_at IS NULL
 	`, contextName).Scan(&systemPrompt)
 	if err == sql.ErrNoRows {
 		return ContextHistory{Messages: []Message{}}, nil
@@ -140,7 +142,7 @@ func (s *PostgresStore) Load(contextName string, limit int) ([]Message, error) {
 
 	// Check if context exists
 	var exists bool
-	err := s.db.QueryRow(`SELECT EXISTS(SELECT 1 FROM contexts WHERE name = $1)`, contextName).Scan(&exists)
+	err := s.db.QueryRow(`SELECT EXISTS(SELECT 1 FROM contexts WHERE name = $1 AND deleted_at IS NULL)`, contextName).Scan(&exists)
 	if err != nil {
 		return nil, fmt.Errorf("check context exists: %w", err)
 	}
@@ -224,9 +226,12 @@ func (s *PostgresStore) AppendMessagesWithMeta(contextName, agent string, verbos
 
 	// Contexts are created implicitly on the first message write (same transaction).
 	if _, err := tx.Exec(`
-		INSERT INTO contexts (name, system_prompt, agent, verbosity)
-		VALUES ($1, '', $2, $3)
-		ON CONFLICT (name) DO NOTHING
+		INSERT INTO contexts (name, system_prompt, agent, verbosity, deleted_at)
+		VALUES ($1, '', $2, $3, NULL)
+		ON CONFLICT (name) DO UPDATE SET
+			agent = EXCLUDED.agent,
+			verbosity = EXCLUDED.verbosity,
+			deleted_at = NULL
 	`, contextName, agent, verbosity); err != nil {
 		return fmt.Errorf("create context: %w", err)
 	}
@@ -262,7 +267,7 @@ func (s *PostgresStore) UpdateContext(name string, newName, agent *string, verbo
 	err = tx.QueryRow(`
 		SELECT name, agent, verbosity
 		FROM contexts
-		WHERE name = $1
+		WHERE name = $1 AND deleted_at IS NULL
 	`, name).Scan(&currentName, &currentAgent, &currentVerbosity)
 	if err != nil {
 		if err == sql.ErrNoRows {
@@ -299,8 +304,8 @@ func (s *PostgresStore) UpdateContext(name string, newName, agent *string, verbo
 	if updatedName != currentName {
 		// Insert new context row and move messages, then delete old context.
 		if _, err := tx.Exec(`
-			INSERT INTO contexts (name, system_prompt, agent, verbosity)
-			SELECT $1, system_prompt, $2, $3
+			INSERT INTO contexts (name, system_prompt, agent, verbosity, deleted_at)
+			SELECT $1, system_prompt, $2, $3, NULL
 			FROM contexts
 			WHERE name = $4
 		`, updatedName, updatedAgent, updatedVerbosity, currentName); err != nil {
@@ -337,7 +342,7 @@ func (s *PostgresStore) UpdateContext(name string, newName, agent *string, verbo
 
 // DeleteContext removes a context and all of its messages.
 func (s *PostgresStore) DeleteContext(name string) error {
-	result, err := s.db.Exec(`DELETE FROM contexts WHERE name = $1`, name)
+	result, err := s.db.Exec(`UPDATE contexts SET deleted_at = NOW() WHERE name = $1 AND deleted_at IS NULL`, name)
 	if err != nil {
 		return fmt.Errorf("delete context: %w", err)
 	}
@@ -350,8 +355,8 @@ func (s *PostgresStore) DeleteContext(name string) error {
 // getOrCreateContextTx ensures a context exists within a transaction
 func (s *PostgresStore) getOrCreateContextTx(tx *sql.Tx, name string) error {
 	_, err := tx.Exec(`
-		INSERT INTO contexts (name, system_prompt) VALUES ($1, '')
-		ON CONFLICT (name) DO NOTHING
+		INSERT INTO contexts (name, system_prompt, deleted_at) VALUES ($1, '', NULL)
+		ON CONFLICT (name) DO UPDATE SET deleted_at = NULL
 	`, name)
 	if err != nil {
 		return fmt.Errorf("create context: %w", err)
@@ -370,6 +375,7 @@ func (s *PostgresStore) ListContexts() ([]ContextInfo, error) {
 			MAX(m.created_at) as last_used
 		FROM contexts c
 		JOIN messages m ON c.name = m.context_name
+		WHERE c.deleted_at IS NULL
 		GROUP BY c.name, c.agent, c.verbosity
 		ORDER BY c.name
 	`)
@@ -399,4 +405,21 @@ func (s *PostgresStore) ListContexts() ([]ContextInfo, error) {
 	}
 
 	return contexts, nil
+}
+
+// GetContextMeta returns context metadata if the context exists and is not deleted.
+func (s *PostgresStore) GetContextMeta(name string) (ContextInfo, bool, error) {
+	var info ContextInfo
+	err := s.db.QueryRow(`
+		SELECT name, COALESCE(agent, ''), COALESCE(verbosity, 2)
+		FROM contexts
+		WHERE name = $1 AND deleted_at IS NULL
+	`, name).Scan(&info.Name, &info.Agent, &info.Verbosity)
+	if err == sql.ErrNoRows {
+		return ContextInfo{}, false, nil
+	}
+	if err != nil {
+		return ContextInfo{}, false, fmt.Errorf("load context meta: %w", err)
+	}
+	return info, true, nil
 }

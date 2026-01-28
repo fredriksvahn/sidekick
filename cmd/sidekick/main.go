@@ -145,5 +145,5 @@ func runServer() error {
 
 	fmt.Fprintf(os.Stderr, "[sidekick] using Postgres for storage\n")
 
-	return server.Run("", historyStore)
+	return server.Run("", historyStore, agentRepo)
 }

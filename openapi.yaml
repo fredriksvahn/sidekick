@@ -1,0 +1,429 @@
+openapi: 3.0.3
+info:
+  title: Sidekick API
+  version: 1.0.0
+servers:
+  - url: http://localhost:1337
+paths:
+  /health:
+    get:
+      summary: Health check
+      responses:
+        '200':
+          description: OK
+  /execute:
+    post:
+      summary: Execute a stateless prompt
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                messages:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/ChatMessage'
+                verbosity:
+                  type: integer
+                  minimum: 0
+                  maximum: 4
+              required:
+                - messages
+      responses:
+        '200':
+          description: Reply
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  reply:
+                    type: string
+                  warning:
+                    type: string
+                required:
+                  - reply
+        '502':
+          description: Upstream execution error
+          content:
+            text/plain:
+              schema:
+                type: string
+  /chat:
+    post:
+      summary: Canonical persisted chat
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChatRequest'
+      responses:
+        '200':
+          description: Reply (non-streaming or streaming)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChatResponse'
+            text/event-stream:
+              schema:
+                type: string
+              example: |
+                data: {"delta":"Hello"}
+
+                data: {"delta":" world"}
+
+                data: {"done":true,"reply":"Hello world","context":{"name":"my-context","agent":"default","verbosity":2}}
+
+        '400':
+          description: Invalid request
+          content:
+            text/plain:
+              schema:
+                type: string
+        '500':
+          description: Model or execution error
+          content:
+            text/plain:
+              schema:
+                type: string
+  /contexts:
+    get:
+      summary: List contexts
+      responses:
+        '200':
+          description: Contexts
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ContextListItem'
+  /contexts/{name}:
+    patch:
+      summary: Update or rename a context
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ContextUpdate'
+      responses:
+        '200':
+          description: Updated context
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContextMeta'
+        '404':
+          description: Context not found
+        '409':
+          description: Context already exists
+    delete:
+      summary: Soft delete a context
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '204':
+          description: Deleted
+        '404':
+          description: Context not found
+  /contexts/{name}/messages:
+    get:
+      summary: Get context messages
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Messages
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ChatMessage'
+        '404':
+          description: Context not found
+  /agents:
+    get:
+      summary: List agents
+      parameters:
+        - name: enabled
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: ["true", "false"]
+      responses:
+        '200':
+          description: Agents
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Agent'
+    post:
+      summary: Create an agent
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AgentInput'
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Agent'
+        '409':
+          description: Agent already exists
+  /agents/{id}:
+    get:
+      summary: Get an agent
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Agent
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Agent'
+        '404':
+          description: Agent not found
+    patch:
+      summary: Update an agent
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AgentUpdate'
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Agent'
+        '404':
+          description: Agent not found
+    delete:
+      summary: Delete an agent
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '204':
+          description: Deleted
+        '404':
+          description: Agent not found
+  /settings:
+    get:
+      summary: Get defaults
+      responses:
+        '200':
+          description: Settings
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Settings'
+components:
+  schemas:
+    ChatMessage:
+      type: object
+      properties:
+        role:
+          type: string
+        content:
+          type: string
+      required:
+        - role
+        - content
+    ChatRequest:
+      type: object
+      properties:
+        context:
+          type: string
+        agent:
+          type: string
+        verbosity:
+          type: integer
+          minimum: 0
+          maximum: 4
+        messages:
+          type: array
+          items:
+            $ref: '#/components/schemas/ChatMessage'
+        stream:
+          type: boolean
+      required:
+        - context
+        - messages
+    ChatResponse:
+      type: object
+      properties:
+        reply:
+          type: string
+        context:
+          $ref: '#/components/schemas/ContextMeta'
+        warning:
+          type: string
+      required:
+        - reply
+        - context
+    ContextListItem:
+      type: object
+      properties:
+        name:
+          type: string
+        message_count:
+          type: integer
+      required:
+        - name
+        - message_count
+    ContextMeta:
+      type: object
+      properties:
+        name:
+          type: string
+        agent:
+          type: string
+        verbosity:
+          type: integer
+      required:
+        - name
+        - agent
+        - verbosity
+    ContextUpdate:
+      type: object
+      properties:
+        name:
+          type: string
+        agent:
+          type: string
+        verbosity:
+          type: integer
+          minimum: 0
+          maximum: 4
+    Agent:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        base_agent:
+          type: string
+          nullable: true
+        model:
+          type: string
+        system_prompt:
+          type: string
+        default_verbosity:
+          type: integer
+          minimum: 0
+          maximum: 4
+        enabled:
+          type: boolean
+        revision:
+          type: integer
+        updated_at:
+          type: string
+          format: date-time
+      required:
+        - id
+        - name
+        - model
+        - system_prompt
+        - default_verbosity
+        - enabled
+        - revision
+        - updated_at
+    AgentInput:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        base_agent:
+          type: string
+          nullable: true
+        model:
+          type: string
+        system_prompt:
+          type: string
+        default_verbosity:
+          type: integer
+          minimum: 0
+          maximum: 4
+        enabled:
+          type: boolean
+      required:
+        - id
+        - name
+        - model
+        - system_prompt
+    AgentUpdate:
+      type: object
+      properties:
+        name:
+          type: string
+        base_agent:
+          type: string
+          nullable: true
+        model:
+          type: string
+        system_prompt:
+          type: string
+        default_verbosity:
+          type: integer
+          minimum: 0
+          maximum: 4
+        enabled:
+          type: boolean
+    Settings:
+      type: object
+      properties:
+        default_agent:
+          type: string
+        default_verbosity:
+          type: integer
+          minimum: 0
+          maximum: 4
+      required:
+        - default_agent
+        - default_verbosity

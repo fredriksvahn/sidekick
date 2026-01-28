@@ -6,7 +6,7 @@ type AgentProfile struct {
 	LocalModel       string
 	RemoteModel      string
 	SystemPrompt     string
-	DefaultVerbosity int // 0=minimal, 1=concise, 2=normal, 3=verbose
+	DefaultVerbosity int // 0=minimal, 1=concise, 2=normal, 3=verbose, 4=very verbose
 }
 
 // Profiles is the registry of all available agent profiles

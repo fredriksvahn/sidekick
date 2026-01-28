@@ -10,15 +10,15 @@ import (
 // SQLite is the PRIMARY source of truth.
 // Postgres is a SYNC TARGET only (push-only, no direct writes).
 type AgentRecord struct {
-	ID              string    // Stable identifier
-	Name            string    // Display name
-	BaseAgent       *string   // Optional parent agent to inherit from
-	Model           string    // Ollama model name
-	SystemPrompt    string    // System prompt text
-	DefaultVerbosity int      // 0=minimal, 1=concise, 2=normal, 3=verbose
-	Enabled         bool      // Whether agent is active
-	Revision        int       // Monotonic version counter for sync
-	UpdatedAt       time.Time // Last modification timestamp
+	ID               string    // Stable identifier
+	Name             string    // Display name
+	BaseAgent        *string   // Optional parent agent to inherit from
+	Model            string    // Ollama model name
+	SystemPrompt     string    // System prompt text
+	DefaultVerbosity int       // 0=minimal, 1=concise, 2=normal, 3=verbose, 4=very verbose
+	Enabled          bool      // Whether agent is active
+	Revision         int       // Monotonic version counter for sync
+	UpdatedAt        time.Time // Last modification timestamp
 }
 
 // Repository handles agent CRUD operations against SQLite.
@@ -41,7 +41,7 @@ func (r *Repository) InitSchema() error {
 		base_agent TEXT,
 		model TEXT NOT NULL,
 		system_prompt TEXT NOT NULL DEFAULT '',
-		default_verbosity INTEGER NOT NULL DEFAULT 2 CHECK(default_verbosity >= 0 AND default_verbosity <= 3),
+		default_verbosity INTEGER NOT NULL DEFAULT 2 CHECK(default_verbosity >= 0 AND default_verbosity <= 4),
 		enabled INTEGER NOT NULL DEFAULT 1,
 		revision INTEGER NOT NULL DEFAULT 1,
 		updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -253,8 +253,8 @@ func validateAgent(agent *AgentRecord) error {
 	if agent.Model == "" {
 		return fmt.Errorf("agent model is required")
 	}
-	if agent.DefaultVerbosity < 0 || agent.DefaultVerbosity > 3 {
-		return fmt.Errorf("default verbosity must be 0-3, got %d", agent.DefaultVerbosity)
+	if agent.DefaultVerbosity < 0 || agent.DefaultVerbosity > 4 {
+		return fmt.Errorf("default verbosity must be 0-4, got %d", agent.DefaultVerbosity)
 	}
 	return nil
 }

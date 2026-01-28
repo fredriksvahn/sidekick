@@ -3,6 +3,7 @@ package commands
 import (
 	"flag"
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/earlysvahn/sidekick/internal/agent"
@@ -38,7 +39,7 @@ func RunTUICommand(args []string) error {
 	fs.BoolVar(&remoteOnly, "remote", false, "force remote execution")
 	fs.StringVar(&storageBackend, "storage", "file", "storage|s: storage backend (file|sqlite)")
 	fs.StringVar(&storageBackend, "s", "file", "")
-	fs.IntVar(&verbosity, "verbosity", -1, "verbosity|v: output verbosity (0=minimal, 1=concise, 2=normal, 3=verbose)")
+	fs.IntVar(&verbosity, "verbosity", -1, "verbosity|v: output verbosity (0=minimal, 1=concise, 2=normal, 3=verbose, 4=very verbose)")
 	fs.IntVar(&verbosity, "v", -1, "")
 
 	if err := fs.Parse(args); err != nil {
@@ -91,8 +92,15 @@ func RunTUICommand(args []string) error {
 		}
 	}
 
-	// Calculate effective verbosity
-	effectiveVerbosity := executor.Effective(verbosity, profile)
+	effectiveVerbosity := executor.DefaultVerbosity()
+	if verbosity >= 0 {
+		if v, clamped := executor.ClampVerbosity(verbosity); clamped {
+			fmt.Fprintf(os.Stderr, "[warning] verbosity %d clamped to %d\n", verbosity, v)
+			effectiveVerbosity = v
+		} else {
+			effectiveVerbosity = v
+		}
+	}
 
 	// Create execute function that wraps executor
 	logf := func(msg string) {
@@ -111,9 +119,7 @@ func RunTUICommand(args []string) error {
 		if err != nil {
 			return tui.ExecutionResult{}, err
 		}
-		// Apply post-processing
-		processedReply := executor.PostProcess(result.Reply, currentVerbosity)
-		return tui.ExecutionResult{Reply: processedReply, Source: result.Source}, nil
+		return tui.ExecutionResult{Reply: result.Reply, Source: result.Source}, nil
 	}
 
 	// Determine agent name for display

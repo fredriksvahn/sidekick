@@ -26,7 +26,7 @@ func (r *PostgresRepository) InitSchema() error {
 		base_agent TEXT,
 		model TEXT NOT NULL,
 		system_prompt TEXT NOT NULL DEFAULT '',
-		default_verbosity INTEGER NOT NULL DEFAULT 2 CHECK(default_verbosity >= 0 AND default_verbosity <= 3),
+		default_verbosity INTEGER NOT NULL DEFAULT 2 CHECK(default_verbosity >= 0 AND default_verbosity <= 4),
 		enabled BOOLEAN NOT NULL DEFAULT TRUE,
 		revision INTEGER NOT NULL DEFAULT 1,
 		updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP

@@ -15,16 +15,18 @@ import (
 )
 
 type HTTPExecutor struct {
-	BaseURL string
-	Client  *http.Client
-	Log     func(string)
+	BaseURL   string
+	Client    *http.Client
+	Log       func(string)
+	Verbosity int
 }
 
 func NewHTTPExecutor(baseURL string, timeout time.Duration, log func(string)) *HTTPExecutor {
 	return &HTTPExecutor{
-		BaseURL: baseURL,
-		Client:  &http.Client{Timeout: timeout},
-		Log:     log,
+		BaseURL:   baseURL,
+		Client:    &http.Client{Timeout: timeout},
+		Log:       log,
+		Verbosity: -1,
 	}
 }
 
@@ -65,6 +67,9 @@ func (e *HTTPExecutor) Execute(messages []chat.Message) (string, error) {
 		e.Log("remote execute start")
 	}
 	payload := map[string]any{"messages": messages}
+	if e.Verbosity >= 0 {
+		payload["verbosity"] = e.Verbosity
+	}
 	b, err := json.Marshal(payload)
 	if err != nil {
 		return "", fmt.Errorf("marshal request: %w", err)
@@ -91,7 +96,8 @@ func (e *HTTPExecutor) Execute(messages []chat.Message) (string, error) {
 		return "", fmt.Errorf("http executor error: %d %s", resp.StatusCode, strings.TrimSpace(string(b)))
 	}
 	var out struct {
-		Reply string `json:"reply"`
+		Reply   string `json:"reply"`
+		Warning string `json:"warning"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		return "", err

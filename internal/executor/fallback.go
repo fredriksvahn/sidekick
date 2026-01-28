@@ -61,6 +61,7 @@ func ExecuteWithFallback(cfg FallbackConfig, messages []chat.Message) (Execution
 
 	// Try remote execution
 	httpExec := NewHTTPExecutor(cfg.RemoteURL, 30*time.Second, nil)
+	httpExec.Verbosity = cfg.Verbosity
 
 	// If using profile, pass the remote model to HTTP executor
 	if cfg.Profile != nil && cfg.ModelOverride == "" {

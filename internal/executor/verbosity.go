@@ -1,77 +1,76 @@
 package executor
 
-import (
-	"strings"
+import "github.com/earlysvahn/sidekick/internal/agent"
 
-	"github.com/earlysvahn/sidekick/internal/agent"
+const (
+	minVerbosity = 0
+	maxVerbosity = 4
 )
 
 // Effective determines the verbosity level to use.
-// CLI override takes precedence over agent default.
+// CLI override takes precedence.
 func Effective(flagValue int, profile *agent.AgentProfile) int {
-	// CLI override takes precedence
-	if flagValue >= 0 && flagValue <= 3 {
+	_ = profile
+	if flagValue >= minVerbosity && flagValue <= maxVerbosity {
 		return flagValue
 	}
-	// Use agent default if available
-	if profile != nil {
-		return profile.DefaultVerbosity
+	return DefaultVerbosity()
+}
+
+// DefaultVerbosity returns the global default verbosity.
+func DefaultVerbosity() int {
+	if profile := agent.GetProfile("default"); profile != nil {
+		if profile.DefaultVerbosity >= minVerbosity && profile.DefaultVerbosity <= maxVerbosity {
+			return profile.DefaultVerbosity
+		}
 	}
-	// Fallback to normal
 	return 2
 }
 
-// SystemConstraint returns system constraint for low verbosity modes.
-// WHY: Models ignore instructions to be concise, this hard guard enforces discipline.
-func SystemConstraint(verbosity int) string {
+// ClampVerbosity clamps to the valid range.
+func ClampVerbosity(value int) (int, bool) {
+	if value < minVerbosity {
+		return minVerbosity, true
+	}
+	if value > maxVerbosity {
+		return maxVerbosity, true
+	}
+	return value, false
+}
+
+// MaxTokens maps verbosity to a hard token budget.
+// Keep 0 as smallest and 4 as largest for predictability.
+func MaxTokens(verbosity int) int {
 	switch verbosity {
 	case 0:
-		return "CRITICAL: Output ONLY the requested code or answer. NO explanations. NO examples beyond what's requested. NO extra sections."
+		return 128
 	case 1:
-		return "Be concise. Provide the requested code/answer with minimal explanation. Avoid verbose examples or extra context."
+		return 256
+	case 2:
+		return 768
+	case 3:
+		return 2000
+	case 4:
+		return 4000
 	default:
-		return ""
+		return 768
 	}
 }
 
-// PostProcess strips excess output for low verbosity modes.
-// WHY: Last-resort safety net because models ignore system constraints.
-func PostProcess(text string, verbosity int) string {
-	if verbosity > 1 {
-		return text // No post-processing for normal/verbose modes
-	}
-
-	lines := strings.Split(text, "\n")
-
-	// Find first and last code block markers
-	firstCodeBlock := -1
-	lastCodeBlock := -1
-	for i, line := range lines {
-		if strings.HasPrefix(strings.TrimSpace(line), "```") {
-			if firstCodeBlock == -1 {
-				firstCodeBlock = i
-			}
-			lastCodeBlock = i
-		}
-	}
-
-	// If no code blocks found, return as-is
-	if firstCodeBlock == -1 {
-		return text
-	}
-
+// SystemConstraint returns verbosity-specific system constraints.
+func SystemConstraint(verbosity int) string {
 	switch verbosity {
 	case 0:
-		// Minimal: strip everything before first code block and after last code block
-		return strings.Join(lines[firstCodeBlock:lastCodeBlock+1], "\n")
+		return "IMPORTANT: Respond with extreme brevity. No explanations. No lists. No markdown headings. No code comments. Answer in at most 3 short lines. Do not explain."
 	case 1:
-		// Concise: keep brief intro before code, strip trailing explanations
-		startLine := 0
-		if firstCodeBlock > 3 {
-			startLine = firstCodeBlock - 3 // Keep up to 3 lines before code
-		}
-		return strings.Join(lines[startLine:lastCodeBlock+1], "\n")
+		return "IMPORTANT: Respond concisely. Minimal explanation only. No step-by-step tutorials. Short code examples are allowed. Avoid adjectives and filler."
+	case 2:
+		return "Respond with balanced, normal detail."
+	case 3:
+		return "Respond with detailed, pedagogical explanations. Use sections and lists when helpful."
+	case 4:
+		return "Respond with full tutorial-level detail, including examples and edge cases."
 	default:
-		return text
+		return ""
 	}
 }

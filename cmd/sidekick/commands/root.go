@@ -40,7 +40,7 @@ func RunOneShot(args []string) error {
 	fs.StringVar(&systemPrompt, "sp", "", "")
 	fs.StringVar(&agentProfile, "agent", "", "agent|a: agent profile (code, golang-dev, etc)")
 	fs.StringVar(&agentProfile, "a", "", "")
-	fs.IntVar(&verbosity, "verbosity", -1, "verbosity|v: output verbosity (0=minimal, 1=concise, 2=normal, 3=verbose)")
+	fs.IntVar(&verbosity, "verbosity", -1, "verbosity|v: output verbosity (0=minimal, 1=concise, 2=normal, 3=verbose, 4=very verbose)")
 	fs.IntVar(&verbosity, "v", -1, "")
 	fs.BoolVar(&localOnly, "local", false, "force local Ollama execution")
 	fs.BoolVar(&remoteOnly, "remote", false, "force remote execution")
@@ -110,8 +110,15 @@ func RunOneShot(args []string) error {
 		return fmt.Errorf("config error: %w", err)
 	}
 
-	// Calculate effective verbosity
-	effectiveVerbosity := executor.Effective(verbosity, profile)
+	effectiveVerbosity := executor.DefaultVerbosity()
+	if verbosity >= 0 {
+		if v, clamped := executor.ClampVerbosity(verbosity); clamped {
+			fmt.Fprintf(os.Stderr, "[warning] verbosity %d clamped to %d\n", verbosity, v)
+			effectiveVerbosity = v
+		} else {
+			effectiveVerbosity = v
+		}
+	}
 
 	// Inject system constraint for low verbosity modes
 	systemWithConstraint := system
@@ -140,9 +147,7 @@ func RunOneShot(args []string) error {
 		return fmt.Errorf("executor error: %w", err)
 	}
 
-	// Apply post-processing and render
-	processedReply := executor.PostProcess(result.Reply, effectiveVerbosity)
-	fmt.Print(render.Markdown(processedReply))
+	fmt.Print(render.Markdown(result.Reply))
 	fmt.Printf("(source: %s)\n", result.Source)
 
 	now := time.Now().UTC()
