@@ -12,7 +12,6 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/earlysvahn/sidekick/internal/chat"
 	"github.com/earlysvahn/sidekick/internal/executor"
-	"github.com/earlysvahn/sidekick/internal/render"
 	"github.com/earlysvahn/sidekick/internal/store"
 )
 
@@ -236,10 +235,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				Time:    now,
 			}
 		} else {
+			assistantAgent := m.currentAgent
+			assistantVerbosity := m.verbosity
 			assistantMsg = store.Message{
-				Role:    "assistant",
-				Content: msg.content,
-				Time:    now,
+				Role:      "assistant",
+				Content:   msg.content,
+				Agent:     &assistantAgent,
+				Verbosity: &assistantVerbosity,
+				Time:      now,
 			}
 			// Store execution source
 			m.lastSource = msg.source
@@ -307,10 +310,6 @@ func (m model) wrapMessage(role, text string) string {
 		return fmt.Sprintf("[%s]\n%s", role, text)
 	}
 
-	if role != "user" && role != "system" {
-		text = render.Markdown(text)
-	}
-
 	roleLabel := fmt.Sprintf("[%s]", role)
 	availableWidth := m.viewport.Width - 2
 	if availableWidth < 20 {
@@ -345,7 +344,11 @@ func (m model) renderMessages() string {
 	for _, msg := range m.messages {
 		role := msg.Role
 		if role == "assistant" {
-			role = m.currentAgent
+			if msg.Agent != nil && *msg.Agent != "" {
+				role = *msg.Agent
+			} else {
+				role = m.currentAgent
+			}
 		}
 		wrapped := m.wrapMessage(role, msg.Content)
 		sb.WriteString(wrapped)

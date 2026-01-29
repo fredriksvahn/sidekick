@@ -11,9 +11,11 @@ import (
 )
 
 type Message struct {
-	Role    string    `json:"role"`
-	Content string    `json:"content"`
-	Time    time.Time `json:"time"`
+	Role      string    `json:"role"`
+	Content   string    `json:"content"`
+	Agent     *string   `json:"agent,omitempty"`
+	Verbosity *int      `json:"verbosity,omitempty"`
+	Time      time.Time `json:"time"`
 }
 
 type ContextHistory struct {
@@ -149,6 +151,18 @@ func (s *FileStore) ListContexts() ([]ContextInfo, error) {
 
 		if len(h.Messages) > 0 {
 			info.LastUsed = h.Messages[len(h.Messages)-1].Time
+			for i := len(h.Messages) - 1; i >= 0; i-- {
+				if h.Messages[i].Role != "assistant" {
+					continue
+				}
+				if h.Messages[i].Agent != nil {
+					info.Agent = *h.Messages[i].Agent
+				}
+				if h.Messages[i].Verbosity != nil {
+					info.Verbosity = *h.Messages[i].Verbosity
+				}
+				break
+			}
 		}
 
 		contexts = append(contexts, info)

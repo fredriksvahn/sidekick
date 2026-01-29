@@ -47,7 +47,11 @@ func RunHistoryCommand(args []string) error {
 
 	// Print all messages in chronological order
 	for _, msg := range ctxHist.Messages {
-		fmt.Printf("[%s] %s\n", msg.Role, msg.Content)
+		role := msg.Role
+		if msg.Role == "assistant" && msg.Agent != nil && *msg.Agent != "" {
+			role = *msg.Agent
+		}
+		fmt.Printf("[%s] %s\n", role, msg.Content)
 	}
 
 	return nil

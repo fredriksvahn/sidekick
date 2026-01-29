@@ -94,7 +94,15 @@ func findNewMessages(sourceMessages, targetMessages []store.Message) []store.Mes
 
 // messageKey generates a unique key for a message based on role, content, and timestamp
 func messageKey(msg store.Message) string {
-	return fmt.Sprintf("%s|%s|%s", msg.Role, msg.Content, msg.Time.Format(time.RFC3339Nano))
+	agent := ""
+	if msg.Agent != nil {
+		agent = *msg.Agent
+	}
+	verbosity := ""
+	if msg.Verbosity != nil {
+		verbosity = fmt.Sprintf("%d", *msg.Verbosity)
+	}
+	return fmt.Sprintf("%s|%s|%s|%s|%s", msg.Role, msg.Content, agent, verbosity, msg.Time.Format(time.RFC3339Nano))
 }
 
 // SyncAgents syncs agents between SQLite and Postgres

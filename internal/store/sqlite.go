@@ -52,6 +52,8 @@ func initSchema(db *sql.DB) error {
 		context_id INTEGER NOT NULL,
 		role TEXT NOT NULL,
 		content TEXT NOT NULL,
+		agent TEXT,
+		verbosity INTEGER,
 		created_at DATETIME NOT NULL,
 		FOREIGN KEY (context_id) REFERENCES contexts(id)
 	);
@@ -130,10 +132,10 @@ func (s *SQLiteStore) LoadContext(contextName string) (ContextHistory, error) {
 
 	// Load all messages
 	rows, err := s.db.Query(`
-		SELECT role, content, created_at
+		SELECT role, content, agent, verbosity, created_at
 		FROM messages
 		WHERE context_id = ?
-		ORDER BY created_at ASC
+		ORDER BY created_at ASC, id ASC
 	`, contextID)
 	if err != nil {
 		return ContextHistory{}, fmt.Errorf("load messages: %w", err)
@@ -143,14 +145,24 @@ func (s *SQLiteStore) LoadContext(contextName string) (ContextHistory, error) {
 	messages := []Message{}
 	for rows.Next() {
 		var msg Message
+		var agent sql.NullString
+		var verbosity sql.NullInt64
 		var createdAt string
-		if err := rows.Scan(&msg.Role, &msg.Content, &createdAt); err != nil {
+		if err := rows.Scan(&msg.Role, &msg.Content, &agent, &verbosity, &createdAt); err != nil {
 			return ContextHistory{}, fmt.Errorf("scan message: %w", err)
 		}
 
 		msg.Time, err = parseTimestamp(createdAt)
 		if err != nil {
 			return ContextHistory{}, fmt.Errorf("parse timestamp: %w", err)
+		}
+		if agent.Valid {
+			agentValue := agent.String
+			msg.Agent = &agentValue
+		}
+		if verbosity.Valid {
+			v := int(verbosity.Int64)
+			msg.Verbosity = &v
 		}
 
 		messages = append(messages, msg)
@@ -203,10 +215,10 @@ func (s *SQLiteStore) Load(contextName string, limit int) ([]Message, error) {
 
 	// Load all messages
 	rows, err := s.db.Query(`
-		SELECT role, content, created_at
+		SELECT role, content, agent, verbosity, created_at
 		FROM messages
 		WHERE context_id = ?
-		ORDER BY created_at ASC
+		ORDER BY created_at ASC, id ASC
 	`, contextID)
 	if err != nil {
 		return nil, fmt.Errorf("load messages: %w", err)
@@ -216,14 +228,24 @@ func (s *SQLiteStore) Load(contextName string, limit int) ([]Message, error) {
 	var allMessages []Message
 	for rows.Next() {
 		var msg Message
+		var agent sql.NullString
+		var verbosity sql.NullInt64
 		var createdAt string
-		if err := rows.Scan(&msg.Role, &msg.Content, &createdAt); err != nil {
+		if err := rows.Scan(&msg.Role, &msg.Content, &agent, &verbosity, &createdAt); err != nil {
 			return nil, fmt.Errorf("scan message: %w", err)
 		}
 
 		msg.Time, err = parseTimestamp(createdAt)
 		if err != nil {
 			return nil, fmt.Errorf("parse timestamp: %w", err)
+		}
+		if agent.Valid {
+			agentValue := agent.String
+			msg.Agent = &agentValue
+		}
+		if verbosity.Valid {
+			v := int(verbosity.Int64)
+			msg.Verbosity = &v
 		}
 
 		allMessages = append(allMessages, msg)
@@ -255,11 +277,16 @@ func (s *SQLiteStore) Append(contextName string, msg Message) error {
 		return fmt.Errorf("get or create context: %w", err)
 	}
 
+	if msg.Role == "user" {
+		msg.Agent = nil
+		msg.Verbosity = nil
+	}
+
 	// Insert message with explicit timestamp
 	_, err = tx.Exec(`
-		INSERT INTO messages (context_id, role, content, created_at)
-		VALUES (?, ?, ?, ?)
-	`, contextID, msg.Role, msg.Content, msg.Time.Format(sqliteTimeFormat))
+		INSERT INTO messages (context_id, role, content, agent, verbosity, created_at)
+		VALUES (?, ?, ?, ?, ?, ?)
+	`, contextID, msg.Role, msg.Content, msg.Agent, msg.Verbosity, msg.Time.Format(sqliteTimeFormat))
 	if err != nil {
 		return fmt.Errorf("insert message: %w", err)
 	}
@@ -318,13 +345,12 @@ func (s *SQLiteStore) ListContexts() ([]ContextInfo, error) {
 	rows, err := s.db.Query(`
 		SELECT
 			c.name,
-			COALESCE(c.agent, ''),
-			COALESCE(c.verbosity, 2),
-			COUNT(m.id) as message_count,
-			MAX(m.created_at) as last_used
+			(SELECT COUNT(1) FROM messages m WHERE m.context_id = c.id) as message_count,
+			(SELECT MAX(m.created_at) FROM messages m WHERE m.context_id = c.id) as last_used,
+			(SELECT agent FROM messages m2 WHERE m2.context_id = c.id AND m2.role = 'assistant' ORDER BY m2.created_at DESC, m2.id DESC LIMIT 1) as agent,
+			(SELECT verbosity FROM messages m2 WHERE m2.context_id = c.id AND m2.role = 'assistant' ORDER BY m2.created_at DESC, m2.id DESC LIMIT 1) as verbosity
 		FROM contexts c
-		JOIN messages m ON c.id = m.context_id
-		GROUP BY c.id, c.name, c.agent, c.verbosity
+		WHERE EXISTS (SELECT 1 FROM messages m WHERE m.context_id = c.id)
 		ORDER BY c.name
 	`)
 	if err != nil {
@@ -336,8 +362,10 @@ func (s *SQLiteStore) ListContexts() ([]ContextInfo, error) {
 	for rows.Next() {
 		var info ContextInfo
 		var lastUsed sql.NullString
+		var agent sql.NullString
+		var verbosity sql.NullInt64
 
-		if err := rows.Scan(&info.Name, &info.Agent, &info.Verbosity, &info.MessageCount, &lastUsed); err != nil {
+		if err := rows.Scan(&info.Name, &info.MessageCount, &lastUsed, &agent, &verbosity); err != nil {
 			return nil, fmt.Errorf("scan context info: %w", err)
 		}
 
@@ -346,6 +374,12 @@ func (s *SQLiteStore) ListContexts() ([]ContextInfo, error) {
 			if err != nil {
 				return nil, fmt.Errorf("parse last used: %w", err)
 			}
+		}
+		if agent.Valid {
+			info.Agent = agent.String
+		}
+		if verbosity.Valid {
+			info.Verbosity = int(verbosity.Int64)
 		}
 
 		contexts = append(contexts, info)

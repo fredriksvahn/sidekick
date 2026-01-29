@@ -139,10 +139,18 @@ func handleLegacyChat(historyStore *store.PostgresStore) http.HandlerFunc {
 		now := time.Now().UTC()
 		messages := make([]store.Message, 0, len(req.Messages))
 		for _, msg := range req.Messages {
+			var agentNamePtr *string
+			var verbosityPtr *int
+			if msg.Role == "assistant" {
+				agentNamePtr = &agentName
+				verbosityPtr = &verbosity
+			}
 			messages = append(messages, store.Message{
-				Role:    msg.Role,
-				Content: msg.Content,
-				Time:    now,
+				Role:      msg.Role,
+				Content:   msg.Content,
+				Agent:     agentNamePtr,
+				Verbosity: verbosityPtr,
+				Time:      now,
 			})
 		}
 
@@ -245,19 +253,30 @@ func handleChat(historyStore *store.PostgresStore) http.HandlerFunc {
 			return
 		}
 
-		now := time.Now().UTC()
+		userTime := time.Now().UTC()
 		stored := make([]store.Message, 0, len(req.Messages)+1)
 		for _, msg := range req.Messages {
+			var agentNamePtr *string
+			var verbosityPtr *int
+			if msg.Role == "assistant" {
+				agentNamePtr = &agentName
+				verbosityPtr = &verbosity
+			}
 			stored = append(stored, store.Message{
-				Role:    msg.Role,
-				Content: msg.Content,
-				Time:    now,
+				Role:      msg.Role,
+				Content:   msg.Content,
+				Agent:     agentNamePtr,
+				Verbosity: verbosityPtr,
+				Time:      userTime,
 			})
 		}
+		assistantTime := time.Now().UTC()
 		stored = append(stored, store.Message{
-			Role:    "assistant",
-			Content: reply,
-			Time:    now,
+			Role:      "assistant",
+			Content:   reply,
+			Agent:     &agentName,
+			Verbosity: &verbosity,
+			Time:      assistantTime,
 		})
 
 		if err := historyStore.AppendMessagesWithMeta(contextName, agentName, verbosity, stored); err != nil {
@@ -588,17 +607,19 @@ func handleAPIContexts(historyStore *store.PostgresStore) http.HandlerFunc {
 		}
 
 		type contextResponse struct {
-			Name      string `json:"name"`
-			Agent     string `json:"agent"`
-			Verbosity int    `json:"verbosity"`
+			Name         string `json:"name"`
+			MessageCount int    `json:"message_count"`
+			Agent        string `json:"agent"`
+			Verbosity    int    `json:"verbosity"`
 		}
 
 		response := make([]contextResponse, 0, len(contexts))
 		for _, ctx := range contexts {
 			response = append(response, contextResponse{
-				Name:      ctx.Name,
-				Agent:     ctx.Agent,
-				Verbosity: ctx.Verbosity,
+				Name:         ctx.Name,
+				MessageCount: ctx.MessageCount,
+				Agent:        ctx.Agent,
+				Verbosity:    ctx.Verbosity,
 			})
 		}
 
@@ -684,6 +705,8 @@ func handleContexts(historyStore store.HistoryStore) http.HandlerFunc {
 		type contextResponse struct {
 			Name         string `json:"name"`
 			MessageCount int    `json:"message_count"`
+			Agent        string `json:"agent"`
+			Verbosity    int    `json:"verbosity"`
 		}
 
 		response := make([]contextResponse, 0, len(contexts))
@@ -691,6 +714,8 @@ func handleContexts(historyStore store.HistoryStore) http.HandlerFunc {
 			response = append(response, contextResponse{
 				Name:         ctx.Name,
 				MessageCount: ctx.MessageCount,
+				Agent:        ctx.Agent,
+				Verbosity:    ctx.Verbosity,
 			})
 		}
 
@@ -732,15 +757,27 @@ func handleContextRoutes(historyStore *store.PostgresStore) http.HandlerFunc {
 			}
 
 			type messageResponse struct {
-				Role    string `json:"role"`
-				Content string `json:"content"`
+				Role      string  `json:"role"`
+				Content   string  `json:"content"`
+				Agent     *string `json:"agent,omitempty"`
+				Verbosity *int    `json:"verbosity,omitempty"`
+				CreatedAt string  `json:"created_at"`
 			}
 
 			response := make([]messageResponse, 0, len(ctxHist.Messages))
 			for _, msg := range ctxHist.Messages {
+				var agentName *string
+				var verbosity *int
+				if msg.Role == "assistant" {
+					agentName = msg.Agent
+					verbosity = msg.Verbosity
+				}
 				response = append(response, messageResponse{
-					Role:    msg.Role,
-					Content: msg.Content,
+					Role:      msg.Role,
+					Content:   msg.Content,
+					Agent:     agentName,
+					Verbosity: verbosity,
+					CreatedAt: msg.Time.UTC().Format(time.RFC3339),
 				})
 			}
 

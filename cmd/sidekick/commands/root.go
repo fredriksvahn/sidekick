@@ -12,7 +12,6 @@ import (
 	"github.com/earlysvahn/sidekick/internal/cli"
 	"github.com/earlysvahn/sidekick/internal/config"
 	"github.com/earlysvahn/sidekick/internal/executor"
-	"github.com/earlysvahn/sidekick/internal/render"
 	"github.com/earlysvahn/sidekick/internal/store"
 )
 
@@ -147,12 +146,23 @@ func RunOneShot(args []string) error {
 		return fmt.Errorf("executor error: %w", err)
 	}
 
-	fmt.Print(render.Markdown(result.Reply))
+	fmt.Print(result.Reply)
 	fmt.Printf("(source: %s)\n", result.Source)
 
 	now := time.Now().UTC()
 	_ = historyStore.Append(contextName, store.Message{Role: "user", Content: rawPrompt, Time: now})
-	_ = historyStore.Append(contextName, store.Message{Role: "assistant", Content: result.Reply, Time: now})
+	assistantAgent := agentProfile
+	if assistantAgent == "" {
+		assistantAgent = "default"
+	}
+	assistantVerbosity := effectiveVerbosity
+	_ = historyStore.Append(contextName, store.Message{
+		Role:      "assistant",
+		Content:   result.Reply,
+		Agent:     &assistantAgent,
+		Verbosity: &assistantVerbosity,
+		Time:      now,
+	})
 
 	return nil
 }

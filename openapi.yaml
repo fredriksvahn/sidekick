@@ -157,7 +157,7 @@ paths:
               schema:
                 type: array
                 items:
-                  $ref: '#/components/schemas/ChatMessage'
+                  $ref: '#/components/schemas/StoredMessage'
         '404':
           description: Context not found
   /agents:
@@ -269,9 +269,35 @@ components:
           type: string
         content:
           type: string
+        agent:
+          type: string
+        verbosity:
+          type: integer
+          minimum: 0
+          maximum: 4
       required:
         - role
         - content
+    StoredMessage:
+      type: object
+      properties:
+        role:
+          type: string
+        content:
+          type: string
+        agent:
+          type: string
+        verbosity:
+          type: integer
+          minimum: 0
+          maximum: 4
+        created_at:
+          type: string
+          format: date-time
+      required:
+        - role
+        - content
+        - created_at
     ChatRequest:
       type: object
       properties:
@@ -311,9 +337,15 @@ components:
           type: string
         message_count:
           type: integer
+        agent:
+          type: string
+        verbosity:
+          type: integer
       required:
         - name
         - message_count
+        - agent
+        - verbosity
     ContextMeta:
       type: object
       properties:

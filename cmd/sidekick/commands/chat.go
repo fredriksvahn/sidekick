@@ -15,7 +15,6 @@ import (
 	"github.com/earlysvahn/sidekick/internal/cli"
 	"github.com/earlysvahn/sidekick/internal/config"
 	"github.com/earlysvahn/sidekick/internal/executor"
-	"github.com/earlysvahn/sidekick/internal/render"
 	"github.com/earlysvahn/sidekick/internal/store"
 )
 
@@ -274,14 +273,22 @@ func runChatMode(
 
 		// Apply post-processing and render
 		fmt.Printf("\n[%s]\n", currentAgent)
-		fmt.Print(render.Markdown(result.Reply))
+		fmt.Print(result.Reply)
 		fmt.Printf("(source: %s)\n", result.Source)
 		fmt.Println()
 
 		// Persist messages
 		now := time.Now().UTC()
 		userMsg := store.Message{Role: "user", Content: input, Time: now}
-		assistantMsg := store.Message{Role: "assistant", Content: result.Reply, Time: now}
+		assistantAgent := currentAgent
+		assistantVerbosity := effectiveVerbosity
+		assistantMsg := store.Message{
+			Role:      "assistant",
+			Content:   result.Reply,
+			Agent:     &assistantAgent,
+			Verbosity: &assistantVerbosity,
+			Time:      now,
+		}
 
 		if err := historyStore.Append(contextName, userMsg); err != nil {
 			fmt.Fprintf(os.Stderr, "[warning] failed to save user message: %v\n", err)
