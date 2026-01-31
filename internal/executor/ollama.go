@@ -8,7 +8,7 @@ import (
 type OllamaExecutor struct {
 	Model     string
 	Log       func(string)
-	Verbosity int // 0=minimal, 1=concise, 2=normal, 3=verbose, 4=very verbose
+	Verbosity int // 0=minimal, 1=concise, 2=normal, 3=verbose, 4=very verbose, 5=exhaustive
 }
 
 func (e *OllamaExecutor) Execute(messages []chat.Message) (string, error) {
@@ -22,7 +22,7 @@ func (e *OllamaExecutor) Execute(messages []chat.Message) (string, error) {
 
 	// Hard cap tokens per verbosity.
 	var options map[string]int
-	if e.Verbosity >= 0 && e.Verbosity <= 4 {
+	if e.Verbosity >= 0 && e.Verbosity <= 5 {
 		options = map[string]int{"num_predict": MaxTokens(e.Verbosity)}
 	}
 

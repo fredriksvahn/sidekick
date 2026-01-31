@@ -182,10 +182,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 				var newLevel int
 				_, err := fmt.Sscanf(levelStr, "%d", &newLevel)
-				if err != nil || newLevel < 0 || newLevel > 4 {
+				if err != nil || newLevel < 0 || newLevel > 5 {
 					sysMsg = store.Message{
 						Role:    "system",
-						Content: "Invalid verbosity level. Use 0 (minimal), 1 (concise), 2 (normal), 3 (verbose), or 4 (very verbose)",
+						Content: "Invalid verbosity level. Use 0 (minimal), 1 (concise), 2 (normal), 3 (verbose), 4 (very verbose), or 5 (exhaustive)",
 						Time:    now,
 					}
 				} else {

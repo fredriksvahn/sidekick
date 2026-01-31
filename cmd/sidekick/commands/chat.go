@@ -47,7 +47,7 @@ func RunChatCommand(args []string) error {
 	fs.BoolVar(&quiet, "quiet", false, "suppress non-error logs")
 	fs.StringVar(&storageBackend, "storage", "file", "storage|s: storage backend (file|sqlite)")
 	fs.StringVar(&storageBackend, "s", "file", "")
-	fs.IntVar(&verbosity, "verbosity", -1, "verbosity|v: output verbosity (0=minimal, 1=concise, 2=normal, 3=verbose, 4=very verbose)")
+	fs.IntVar(&verbosity, "verbosity", -1, "verbosity|v: output verbosity (0=minimal, 1=concise, 2=normal, 3=verbose, 4=very verbose, 5=exhaustive)")
 	fs.IntVar(&verbosity, "v", -1, "")
 
 	if err := fs.Parse(args); err != nil {
@@ -152,15 +152,14 @@ func runChatMode(
 
 	// Note: Signal handling simplified - readline handles Ctrl+C/Ctrl+D
 
-	effectiveVerbosity := executor.DefaultVerbosity()
+	defaultVerbosity := executor.DefaultVerbosity()
+	requestedVerbosityValue := 0
+	var requestedVerbosity *int
 	if verbosity >= 0 {
-		if v, clamped := executor.ClampVerbosity(verbosity); clamped {
-			fmt.Fprintf(os.Stderr, "[warning] verbosity %d clamped to %d\n", verbosity, v)
-			effectiveVerbosity = v
-		} else {
-			effectiveVerbosity = v
-		}
+		requestedVerbosityValue = verbosity
+		requestedVerbosity = &requestedVerbosityValue
 	}
+	keywordStore := resolveKeywordLister(historyStore)
 
 	// Print welcome message
 	fmt.Fprintf(os.Stderr, "Chat mode (context: %s | agent: %s)\n", contextName, currentAgent)
@@ -232,13 +231,23 @@ func runChatMode(
 			levelStr := strings.TrimSpace(strings.TrimPrefix(input, "/verbosity"))
 			var newLevel int
 			_, err := fmt.Sscanf(levelStr, "%d", &newLevel)
-			if err != nil || newLevel < 0 || newLevel > 4 {
-				fmt.Fprintf(os.Stderr, "Invalid verbosity level. Use 0 (minimal), 1 (concise), 2 (normal), 3 (verbose), or 4 (very verbose)\n\n")
+			if err != nil || newLevel < 0 || newLevel > 5 {
+				fmt.Fprintf(os.Stderr, "Invalid verbosity level. Use 0 (minimal), 1 (concise), 2 (normal), 3 (verbose), 4 (very verbose), or 5 (exhaustive)\n\n")
 				continue
 			}
-			effectiveVerbosity = newLevel
+			requestedVerbosityValue = newLevel
+			requestedVerbosity = &requestedVerbosityValue
 			fmt.Fprintf(os.Stderr, "Verbosity set to: %d\n\n", newLevel)
 			continue
+		}
+
+		effectiveVerbosity, warning, err := executor.ResolveVerbosity(ctx, requestedVerbosity, defaultVerbosity, currentAgent, input, keywordStore)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "[error] %v\n\n", err)
+			continue
+		}
+		if warning != "" {
+			fmt.Fprintf(os.Stderr, "[warning] %s\n", warning)
 		}
 
 		// Inject system constraint for low verbosity modes

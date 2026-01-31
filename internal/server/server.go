@@ -28,7 +28,7 @@ func Run(modelOverride string, historyStore *store.PostgresStore, agentRepo agen
 	fmt.Fprintf(os.Stderr, "[sidekick] listening on %s\n", listener.Addr())
 
 	http.HandleFunc("/health", handleHealth)
-	http.HandleFunc("/execute", handleExecute(modelOverride))
+	http.HandleFunc("/execute", handleExecute(modelOverride, historyStore))
 	http.HandleFunc("/chat", handleChat(historyStore))
 	http.HandleFunc("/api/chat", handleLegacyChat(historyStore))
 	http.HandleFunc("/settings", handleSettings)
@@ -40,6 +40,8 @@ func Run(modelOverride string, historyStore *store.PostgresStore, agentRepo agen
 	http.HandleFunc("/api/contexts/", handleAPIContext(historyStore))
 	http.HandleFunc("/contexts", handleContexts(historyStore))
 	http.HandleFunc("/contexts/", handleContextRoutes(historyStore))
+	http.HandleFunc("/verbosity/keywords", handleVerbosityKeywords(historyStore))
+	http.HandleFunc("/verbosity/keywords/", handleVerbosityKeyword(historyStore))
 
 	return http.Serve(listener, nil)
 }
@@ -48,7 +50,7 @@ func handleHealth(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
-func handleExecute(modelOverride string) http.HandlerFunc {
+func handleExecute(modelOverride string, keywordStore store.VerbosityKeywordLister) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			w.WriteHeader(http.StatusMethodNotAllowed)
@@ -68,7 +70,12 @@ func handleExecute(modelOverride string) http.HandlerFunc {
 			return
 		}
 
-		verbosity, warning := normalizeVerbosity(req.Verbosity, executor.DefaultVerbosity())
+		lastUserMessage := latestUserMessage(req.Messages)
+		verbosity, warning, err := executor.ResolveVerbosity(r.Context(), req.Verbosity, executor.DefaultVerbosity(), "default", lastUserMessage, keywordStore)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 		messages := applyVerbosityConstraint(req.Messages, verbosity)
 
 		logf := func(msg string) {
@@ -211,18 +218,22 @@ func handleChat(historyStore *store.PostgresStore) http.HandlerFunc {
 			}
 		}
 
-		verbosityInput := req.Verbosity
-		if verbosityInput == nil && hasContext {
-			verbosityInput = &contextMeta.Verbosity
-		}
-		verbosity, verbosityWarning := normalizeVerbosity(verbosityInput, defaultVerbosity)
-
 		warning := ""
 		profile := agent.GetProfile(agentName)
 		if profile == nil {
 			warning = fmt.Sprintf("agent %q not found; falling back to %q", agentName, defaultAgent)
 			agentName = defaultAgent
 			profile = agent.GetProfile(agentName)
+		}
+		verbosityInput := req.Verbosity
+		if verbosityInput == nil && hasContext {
+			verbosityInput = &contextMeta.Verbosity
+		}
+		lastUserMessage := latestUserMessage(req.Messages)
+		verbosity, verbosityWarning, err := executor.ResolveVerbosity(r.Context(), verbosityInput, defaultVerbosity, agentName, lastUserMessage, historyStore)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
 		}
 		warning = joinWarnings(warning, verbosityWarning)
 
@@ -648,8 +659,8 @@ func handleAPIContext(historyStore *store.PostgresStore) http.HandlerFunc {
 				http.Error(w, "invalid JSON", http.StatusBadRequest)
 				return
 			}
-			if req.Verbosity != nil && (*req.Verbosity < 0 || *req.Verbosity > 4) {
-				http.Error(w, "verbosity must be between 0 and 4", http.StatusBadRequest)
+			if req.Verbosity != nil && (*req.Verbosity < 0 || *req.Verbosity > 5) {
+				http.Error(w, "verbosity must be between 0 and 5", http.StatusBadRequest)
 				return
 			}
 
@@ -798,8 +809,8 @@ func handleContextRoutes(historyStore *store.PostgresStore) http.HandlerFunc {
 				http.Error(w, "invalid JSON", http.StatusBadRequest)
 				return
 			}
-			if req.Verbosity != nil && (*req.Verbosity < 0 || *req.Verbosity > 4) {
-				http.Error(w, "verbosity must be between 0 and 4", http.StatusBadRequest)
+			if req.Verbosity != nil && (*req.Verbosity < 0 || *req.Verbosity > 5) {
+				http.Error(w, "verbosity must be between 0 and 5", http.StatusBadRequest)
 				return
 			}
 
@@ -886,6 +897,15 @@ func joinWarnings(existing, next string) string {
 		return existing
 	}
 	return existing + "; " + next
+}
+
+func latestUserMessage(messages []chat.Message) string {
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role == "user" {
+			return messages[i].Content
+		}
+	}
+	return ""
 }
 
 func applyVerbosityConstraint(messages []chat.Message, verbosity int) []chat.Message {

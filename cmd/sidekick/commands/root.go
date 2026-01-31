@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"os"
@@ -39,7 +40,7 @@ func RunOneShot(args []string) error {
 	fs.StringVar(&systemPrompt, "sp", "", "")
 	fs.StringVar(&agentProfile, "agent", "", "agent|a: agent profile (code, golang-dev, etc)")
 	fs.StringVar(&agentProfile, "a", "", "")
-	fs.IntVar(&verbosity, "verbosity", -1, "verbosity|v: output verbosity (0=minimal, 1=concise, 2=normal, 3=verbose, 4=very verbose)")
+	fs.IntVar(&verbosity, "verbosity", -1, "verbosity|v: output verbosity (0=minimal, 1=concise, 2=normal, 3=verbose, 4=very verbose, 5=exhaustive)")
 	fs.IntVar(&verbosity, "v", -1, "")
 	fs.BoolVar(&localOnly, "local", false, "force local Ollama execution")
 	fs.BoolVar(&remoteOnly, "remote", false, "force remote execution")
@@ -109,14 +110,22 @@ func RunOneShot(args []string) error {
 		return fmt.Errorf("config error: %w", err)
 	}
 
-	effectiveVerbosity := executor.DefaultVerbosity()
+	var requestedVerbosity *int
 	if verbosity >= 0 {
-		if v, clamped := executor.ClampVerbosity(verbosity); clamped {
-			fmt.Fprintf(os.Stderr, "[warning] verbosity %d clamped to %d\n", verbosity, v)
-			effectiveVerbosity = v
-		} else {
-			effectiveVerbosity = v
-		}
+		v := verbosity
+		requestedVerbosity = &v
+	}
+	keywordStore := resolveKeywordLister(historyStore)
+	agentName := "default"
+	if agentProfile != "" {
+		agentName = agentProfile
+	}
+	effectiveVerbosity, warning, err := executor.ResolveVerbosity(context.Background(), requestedVerbosity, executor.DefaultVerbosity(), agentName, rawPrompt, keywordStore)
+	if err != nil {
+		return fmt.Errorf("verbosity escalation error: %w", err)
+	}
+	if warning != "" {
+		fmt.Fprintf(os.Stderr, "[warning] %s\n", warning)
 	}
 
 	// Inject system constraint for low verbosity modes
