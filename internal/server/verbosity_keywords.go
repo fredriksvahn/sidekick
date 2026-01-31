@@ -4,7 +4,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
@@ -27,24 +26,20 @@ func handleVerbosityKeywords(keywordStore store.VerbosityKeywordStore) http.Hand
 			}
 
 			type keywordResponse struct {
-				ID           int    `json:"id"`
 				Keyword      string `json:"keyword"`
 				MinRequested int    `json:"min_requested"`
 				EscalateTo   int    `json:"escalate_to"`
 				Enabled      bool   `json:"enabled"`
-				Priority     int    `json:"priority"`
 				CreatedAt    string `json:"created_at"`
 			}
 
 			resp := make([]keywordResponse, 0, len(keywords))
 			for _, kw := range keywords {
 				resp = append(resp, keywordResponse{
-					ID:           kw.ID,
 					Keyword:      kw.Keyword,
 					MinRequested: kw.MinRequested,
 					EscalateTo:   kw.EscalateTo,
 					Enabled:      kw.Enabled,
-					Priority:     kw.Priority,
 					CreatedAt:    kw.CreatedAt.UTC().Format(time.RFC3339),
 				})
 			}
@@ -56,7 +51,6 @@ func handleVerbosityKeywords(keywordStore store.VerbosityKeywordStore) http.Hand
 				Keyword      string `json:"keyword"`
 				MinRequested *int   `json:"min_requested"`
 				EscalateTo   *int   `json:"escalate_to"`
-				Priority     *int   `json:"priority"`
 				Enabled      *bool  `json:"enabled"`
 			}
 			if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
@@ -78,10 +72,6 @@ func handleVerbosityKeywords(keywordStore store.VerbosityKeywordStore) http.Hand
 				return
 			}
 
-			priority := 0
-			if input.Priority != nil {
-				priority = *input.Priority
-			}
 			enabled := true
 			if input.Enabled != nil {
 				enabled = *input.Enabled
@@ -92,7 +82,7 @@ func handleVerbosityKeywords(keywordStore store.VerbosityKeywordStore) http.Hand
 				return
 			}
 
-			kw, err := keywordStore.CreateVerbosityKeyword(r.Context(), keyword, *input.MinRequested, *input.EscalateTo, priority, enabled)
+			kw, err := keywordStore.CreateVerbosityKeyword(r.Context(), keyword, *input.MinRequested, *input.EscalateTo, enabled)
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
@@ -101,12 +91,10 @@ func handleVerbosityKeywords(keywordStore store.VerbosityKeywordStore) http.Hand
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusCreated)
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"id":            kw.ID,
 				"keyword":       kw.Keyword,
 				"min_requested": kw.MinRequested,
 				"escalate_to":   kw.EscalateTo,
 				"enabled":       kw.Enabled,
-				"priority":      kw.Priority,
 				"created_at":    kw.CreatedAt.UTC().Format(time.RFC3339),
 			})
 		default:
@@ -122,46 +110,31 @@ func handleVerbosityKeyword(keywordStore store.VerbosityKeywordStore) http.Handl
 			return
 		}
 
-		idStr := strings.TrimPrefix(r.URL.Path, "/verbosity/keywords/")
-		idStr = strings.TrimSuffix(idStr, "/")
-		if idStr == "" {
-			http.Error(w, "keyword id required", http.StatusBadRequest)
-			return
-		}
-		id, err := strconv.Atoi(idStr)
-		if err != nil {
-			http.Error(w, "keyword id must be a number", http.StatusBadRequest)
+		keyword := strings.TrimPrefix(r.URL.Path, "/verbosity/keywords/")
+		keyword = strings.TrimSuffix(keyword, "/")
+		if keyword == "" {
+			http.Error(w, "keyword required", http.StatusBadRequest)
 			return
 		}
 
 		switch r.Method {
 		case http.MethodPatch:
 			var input struct {
-				Keyword      *string `json:"keyword"`
-				MinRequested *int    `json:"min_requested"`
-				EscalateTo   *int    `json:"escalate_to"`
-				Priority     *int    `json:"priority"`
-				Enabled      *bool   `json:"enabled"`
+				MinRequested *int  `json:"min_requested"`
+				EscalateTo   *int  `json:"escalate_to"`
+				Enabled      *bool `json:"enabled"`
 			}
 			if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
 				http.Error(w, "invalid JSON", http.StatusBadRequest)
 				return
 			}
 
-			if input.Keyword == nil && input.MinRequested == nil && input.EscalateTo == nil && input.Priority == nil && input.Enabled == nil {
+			if input.MinRequested == nil && input.EscalateTo == nil && input.Enabled == nil {
 				http.Error(w, "no fields to update", http.StatusBadRequest)
 				return
 			}
 
-			if input.Keyword != nil {
-				trimmed := strings.TrimSpace(*input.Keyword)
-				if trimmed == "" {
-					http.Error(w, "keyword must be non-empty", http.StatusBadRequest)
-					return
-				}
-				input.Keyword = &trimmed
-			}
-
+			// Fetch existing keyword to validate escalate_to >= min_requested
 			keywords, err := keywordStore.ListVerbosityKeywords(r.Context())
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -169,7 +142,7 @@ func handleVerbosityKeyword(keywordStore store.VerbosityKeywordStore) http.Handl
 			}
 			var existing *store.VerbosityKeyword
 			for i := range keywords {
-				if keywords[i].ID == id {
+				if keywords[i].Keyword == keyword {
 					existing = &keywords[i]
 					break
 				}
@@ -192,11 +165,9 @@ func handleVerbosityKeyword(keywordStore store.VerbosityKeywordStore) http.Handl
 				return
 			}
 
-			updated, err := keywordStore.UpdateVerbosityKeyword(r.Context(), id, store.VerbosityKeywordUpdate{
-				Keyword:      input.Keyword,
+			updated, err := keywordStore.UpdateVerbosityKeyword(r.Context(), keyword, store.VerbosityKeywordUpdate{
 				MinRequested: input.MinRequested,
 				EscalateTo:   input.EscalateTo,
-				Priority:     input.Priority,
 				Enabled:      input.Enabled,
 			})
 			if err != nil {
@@ -210,16 +181,14 @@ func handleVerbosityKeyword(keywordStore store.VerbosityKeywordStore) http.Handl
 
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"id":            updated.ID,
 				"keyword":       updated.Keyword,
 				"min_requested": updated.MinRequested,
 				"escalate_to":   updated.EscalateTo,
 				"enabled":       updated.Enabled,
-				"priority":      updated.Priority,
 				"created_at":    updated.CreatedAt.UTC().Format(time.RFC3339),
 			})
 		case http.MethodDelete:
-			if err := keywordStore.DeleteVerbosityKeyword(r.Context(), id); err != nil {
+			if err := keywordStore.DeleteVerbosityKeyword(r.Context(), keyword); err != nil {
 				if err == sql.ErrNoRows {
 					http.Error(w, "keyword not found", http.StatusNotFound)
 					return

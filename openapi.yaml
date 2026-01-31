@@ -260,6 +260,82 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Settings'
+  /verbosity/keywords:
+    get:
+      summary: List verbosity escalation keywords
+      responses:
+        '200':
+          description: Verbosity keywords
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/VerbosityKeyword'
+    post:
+      summary: Create a verbosity escalation keyword
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VerbosityKeywordInput'
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VerbosityKeyword'
+        '400':
+          description: Invalid input
+        '500':
+          description: Database error
+  /verbosity/keywords/{keyword}:
+    patch:
+      summary: Update a verbosity escalation keyword
+      parameters:
+        - name: keyword
+          in: path
+          required: true
+          schema:
+            type: string
+          description: The keyword to update (immutable primary key)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VerbosityKeywordUpdate'
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VerbosityKeyword'
+        '400':
+          description: Invalid input
+        '404':
+          description: Keyword not found
+        '500':
+          description: Database error
+    delete:
+      summary: Delete a verbosity escalation keyword
+      parameters:
+        - name: keyword
+          in: path
+          required: true
+          schema:
+            type: string
+          description: The keyword to delete
+      responses:
+        '204':
+          description: Deleted
+        '404':
+          description: Keyword not found
+        '500':
+          description: Database error
 components:
   schemas:
     ChatMessage:
@@ -459,3 +535,72 @@ components:
       required:
         - default_agent
         - default_verbosity
+    VerbosityKeyword:
+      type: object
+      properties:
+        keyword:
+          type: string
+          description: The keyword to match in user messages (primary key)
+        min_requested:
+          type: integer
+          minimum: 0
+          maximum: 4
+          description: Minimum requested verbosity level for escalation to trigger
+        escalate_to:
+          type: integer
+          minimum: 0
+          maximum: 4
+          description: Verbosity level to escalate to when keyword matches
+        enabled:
+          type: boolean
+          description: Whether this keyword escalation rule is active
+        created_at:
+          type: string
+          format: date-time
+          description: When this keyword was created
+      required:
+        - keyword
+        - min_requested
+        - escalate_to
+        - enabled
+        - created_at
+    VerbosityKeywordInput:
+      type: object
+      properties:
+        keyword:
+          type: string
+          description: The keyword to match in user messages
+        min_requested:
+          type: integer
+          minimum: 0
+          maximum: 4
+          description: Minimum requested verbosity level for escalation to trigger
+        escalate_to:
+          type: integer
+          minimum: 0
+          maximum: 4
+          description: Verbosity level to escalate to when keyword matches
+        enabled:
+          type: boolean
+          description: Whether this keyword escalation rule is active (default true)
+      required:
+        - keyword
+        - min_requested
+        - escalate_to
+    VerbosityKeywordUpdate:
+      type: object
+      properties:
+        min_requested:
+          type: integer
+          minimum: 0
+          maximum: 4
+          description: Minimum requested verbosity level for escalation to trigger
+        escalate_to:
+          type: integer
+          minimum: 0
+          maximum: 4
+          description: Verbosity level to escalate to when keyword matches
+        enabled:
+          type: boolean
+          description: Whether this keyword escalation rule is active
+      description: Update fields for a verbosity keyword. Keyword itself is immutable.

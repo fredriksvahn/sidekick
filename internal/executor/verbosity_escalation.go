@@ -27,7 +27,6 @@ func ResolveVerbosity(ctx context.Context, requested *int, defaultLevel int, age
 	}
 
 	effectiveVerbosity := biasedVerbosity
-	autoEscalated := false
 
 	if keywordStore != nil && strings.TrimSpace(lastUserMessage) != "" {
 		keywords, err := keywordStore.ListVerbosityKeywords(ctx)
@@ -35,11 +34,9 @@ func ResolveVerbosity(ctx context.Context, requested *int, defaultLevel int, age
 			return 0, warning, err
 		}
 		lowered := strings.ToLower(lastUserMessage)
+		highestEscalateTo := effectiveVerbosity
 		for _, kw := range keywords {
 			if !kw.Enabled {
-				continue
-			}
-			if requestedValue < kw.MinRequested {
 				continue
 			}
 			if kw.Keyword == "" {
@@ -48,13 +45,18 @@ func ResolveVerbosity(ctx context.Context, requested *int, defaultLevel int, age
 			if !strings.Contains(lowered, strings.ToLower(kw.Keyword)) {
 				continue
 			}
-			if kw.EscalateTo > effectiveVerbosity {
-				effectiveVerbosity = kw.EscalateTo
+			if requestedValue < kw.MinRequested {
+				continue
 			}
-			if effectiveVerbosity > biasedVerbosity {
-				autoEscalated = true
+			if requestedValue >= kw.EscalateTo {
+				continue
 			}
-			break
+			if kw.EscalateTo > highestEscalateTo {
+				highestEscalateTo = kw.EscalateTo
+			}
+		}
+		if highestEscalateTo > effectiveVerbosity {
+			effectiveVerbosity = highestEscalateTo
 		}
 	}
 
@@ -62,8 +64,8 @@ func ResolveVerbosity(ctx context.Context, requested *int, defaultLevel int, age
 		effectiveVerbosity = v
 	}
 
-	if autoEscalated {
-		warning = joinWarning(warning, fmt.Sprintf("Verbosity auto-escalated from %d to %d based on prompt analysis", requestedValue, effectiveVerbosity))
+	if effectiveVerbosity > biasedVerbosity {
+		warning = joinWarning(warning, fmt.Sprintf("verbosity auto-escalated from %d to %d due to detected intent", requestedValue, effectiveVerbosity))
 	}
 
 	return effectiveVerbosity, warning, nil
