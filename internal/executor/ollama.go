@@ -32,3 +32,28 @@ func (e *OllamaExecutor) Execute(messages []chat.Message) (string, error) {
 	}
 	return reply, err
 }
+
+// ExecuteStreaming executes with real-time token streaming.
+// The onDelta callback is called for each token chunk as it arrives from Ollama.
+// Returns the complete response text or an error.
+func (e *OllamaExecutor) ExecuteStreaming(messages []chat.Message, onDelta func(string) error) (string, error) {
+	model := ollama.SelectedModel(e.Model)
+	if err := ollama.EnsureModel(model, e.Log); err != nil {
+		return "", err
+	}
+	if e.Log != nil {
+		e.Log("local ollama streaming request start")
+	}
+
+	// Hard cap tokens per verbosity.
+	var options map[string]int
+	if e.Verbosity >= 0 && e.Verbosity <= 5 {
+		options = map[string]int{"num_predict": MaxTokens(e.Verbosity)}
+	}
+
+	reply, err := ollama.AskWithStreaming(model, messages, options, onDelta)
+	if err == nil && e.Log != nil {
+		e.Log("local ollama streaming response complete")
+	}
+	return reply, err
+}

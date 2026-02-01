@@ -3,7 +3,6 @@ package executor
 import (
 	"context"
 	"fmt"
-	"log"
 	"strings"
 
 	"github.com/earlysvahn/sidekick/internal/store"
@@ -34,45 +33,29 @@ func ResolveVerbosity(ctx context.Context, requested *int, defaultLevel int, age
 		if err != nil {
 			return 0, warning, err
 		}
-		log.Printf("[ESCALATION DEBUG] Loaded %d keywords from DB", len(keywords))
-		log.Printf("[ESCALATION DEBUG] User message: %q", lastUserMessage)
-		log.Printf("[ESCALATION DEBUG] Requested verbosity: %d, Effective verbosity: %d", requestedValue, effectiveVerbosity)
-
 		lowered := strings.ToLower(lastUserMessage)
 		highestEscalateTo := effectiveVerbosity
-		matchedCount := 0
 		for _, kw := range keywords {
-			kwLower := strings.ToLower(kw.Keyword)
-
 			if !kw.Enabled {
-				log.Printf("[ESCALATION DEBUG] Skipping disabled keyword: %q", kw.Keyword)
 				continue
 			}
 			if kw.Keyword == "" {
 				continue
 			}
-			if !strings.Contains(lowered, kwLower) {
+			if !strings.Contains(lowered, strings.ToLower(kw.Keyword)) {
 				continue
 			}
-			log.Printf("[ESCALATION DEBUG] MATCHED keyword: %q (min_requested=%d, escalate_to=%d)", kw.Keyword, kw.MinRequested, kw.EscalateTo)
-			matchedCount++
-
 			if requestedValue < kw.MinRequested {
-				log.Printf("[ESCALATION DEBUG] - Skipped: requested (%d) < min_requested (%d)", requestedValue, kw.MinRequested)
 				continue
 			}
 			if requestedValue >= kw.EscalateTo {
-				log.Printf("[ESCALATION DEBUG] - Skipped: requested (%d) >= escalate_to (%d)", requestedValue, kw.EscalateTo)
 				continue
 			}
 			if kw.EscalateTo > highestEscalateTo {
-				log.Printf("[ESCALATION DEBUG] - CANDIDATE: escalate_to (%d) > current highest (%d)", kw.EscalateTo, highestEscalateTo)
 				highestEscalateTo = kw.EscalateTo
 			}
 		}
-		log.Printf("[ESCALATION DEBUG] Total keywords matched: %d, Highest escalate_to: %d", matchedCount, highestEscalateTo)
 		if highestEscalateTo > effectiveVerbosity {
-			log.Printf("[ESCALATION DEBUG] ESCALATING from %d to %d", effectiveVerbosity, highestEscalateTo)
 			effectiveVerbosity = highestEscalateTo
 		}
 	}

@@ -60,6 +60,7 @@ func handleExecute(modelOverride string, keywordStore store.VerbosityKeywordList
 		var req struct {
 			Messages  []chat.Message `json:"messages"`
 			Verbosity *int           `json:"verbosity"`
+			Stream    bool           `json:"stream"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, "invalid JSON", http.StatusBadRequest)
@@ -88,7 +89,67 @@ func handleExecute(modelOverride string, keywordStore store.VerbosityKeywordList
 			logf(fmt.Sprintf("received request: %d messages, last=%q", len(req.Messages), lastMsg.Content))
 		}
 
-		reply, err := (&executor.OllamaExecutor{Model: modelOverride, Log: logf, Verbosity: verbosity}).Execute(messages)
+		var reply string
+
+		if req.Stream {
+			// Streaming path
+			flusher, ok := w.(http.Flusher)
+			if !ok {
+				http.Error(w, "streaming not supported", http.StatusInternalServerError)
+				return
+			}
+
+			// Set SSE headers immediately
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.Header().Set("Cache-Control", "no-cache")
+			w.Header().Set("Connection", "keep-alive")
+
+			// Send escalation info event immediately if it occurred
+			if warning != "" {
+				infoPayload, _ := json.Marshal(map[string]any{
+					"type":    "info",
+					"message": warning,
+				})
+				fmt.Fprintf(w, "data: %s\n\n", infoPayload)
+				flusher.Flush()
+			}
+
+			// Stream tokens as they arrive from Ollama
+			onDelta := func(delta string) error {
+				deltaPayload, err := json.Marshal(map[string]any{
+					"delta": delta,
+				})
+				if err != nil {
+					return err
+				}
+				fmt.Fprintf(w, "data: %s\n\n", deltaPayload)
+				flusher.Flush()
+				return nil
+			}
+
+			reply, err = (&executor.OllamaExecutor{Model: modelOverride, Log: logf, Verbosity: verbosity}).ExecuteStreaming(messages, onDelta)
+			if err != nil {
+				// Can't use http.Error after headers sent
+				errPayload, _ := json.Marshal(map[string]any{
+					"type":  "error",
+					"error": err.Error(),
+				})
+				fmt.Fprintf(w, "data: %s\n\n", errPayload)
+				flusher.Flush()
+				return
+			}
+
+			// Send final done event
+			finalPayload, _ := json.Marshal(map[string]any{
+				"done": true,
+			})
+			fmt.Fprintf(w, "data: %s\n\n", finalPayload)
+			flusher.Flush()
+			return
+		}
+
+		// Non-streaming path
+		reply, err = (&executor.OllamaExecutor{Model: modelOverride, Log: logf, Verbosity: verbosity}).Execute(messages)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadGateway)
 			return
@@ -258,7 +319,105 @@ func handleChat(historyStore *store.PostgresStore) http.HandlerFunc {
 		}
 
 		execMessages := buildChatMessages(systemPrompt, ctxHist.Messages, req.Messages)
-		reply, err := (&executor.OllamaExecutor{Model: model, Verbosity: verbosity}).Execute(execMessages)
+
+		var reply string
+
+		if req.Stream {
+			// Streaming path: send events in real-time
+			flusher, ok := w.(http.Flusher)
+			if !ok {
+				http.Error(w, "streaming not supported", http.StatusInternalServerError)
+				return
+			}
+
+			// Set SSE headers immediately
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.Header().Set("Cache-Control", "no-cache")
+			w.Header().Set("Connection", "keep-alive")
+
+			// Send escalation info event immediately if it occurred
+			if warning != "" {
+				infoPayload, _ := json.Marshal(map[string]any{
+					"type":    "info",
+					"message": warning,
+				})
+				fmt.Fprintf(w, "data: %s\n\n", infoPayload)
+				flusher.Flush()
+			}
+
+			// Stream tokens as they arrive from Ollama
+			onDelta := func(delta string) error {
+				deltaPayload, err := json.Marshal(map[string]any{
+					"delta": delta,
+				})
+				if err != nil {
+					return err
+				}
+				fmt.Fprintf(w, "data: %s\n\n", deltaPayload)
+				flusher.Flush()
+				return nil
+			}
+
+			reply, err = (&executor.OllamaExecutor{Model: model, Verbosity: verbosity}).ExecuteStreaming(execMessages, onDelta)
+			if err != nil {
+				// Can't use http.Error after headers sent
+				errPayload, _ := json.Marshal(map[string]any{
+					"type":  "error",
+					"error": err.Error(),
+				})
+				fmt.Fprintf(w, "data: %s\n\n", errPayload)
+				flusher.Flush()
+				return
+			}
+
+			// Persist to DB after streaming completes
+			userTime := time.Now().UTC()
+			stored := make([]store.Message, 0, len(req.Messages)+1)
+			for _, msg := range req.Messages {
+				var agentNamePtr *string
+				var verbosityPtr *int
+				if msg.Role == "assistant" {
+					agentNamePtr = &agentName
+					verbosityPtr = &verbosity
+				}
+				stored = append(stored, store.Message{
+					Role:      msg.Role,
+					Content:   msg.Content,
+					Agent:     agentNamePtr,
+					Verbosity: verbosityPtr,
+					Time:      userTime,
+				})
+			}
+			assistantTime := time.Now().UTC()
+			stored = append(stored, store.Message{
+				Role:      "assistant",
+				Content:   reply,
+				Agent:     &agentName,
+				Verbosity: &verbosity,
+				Time:      assistantTime,
+			})
+
+			if err := historyStore.AppendMessagesWithMeta(contextName, agentName, verbosity, stored); err != nil {
+				// Log error but can't return it after headers sent
+				fmt.Fprintf(os.Stderr, "[sidekick] failed to persist messages: %v\n", err)
+			}
+
+			// Send final done event
+			finalPayload, _ := json.Marshal(map[string]any{
+				"done": true,
+				"context": map[string]any{
+					"name":      contextName,
+					"agent":     agentName,
+					"verbosity": verbosity,
+				},
+			})
+			fmt.Fprintf(w, "data: %s\n\n", finalPayload)
+			flusher.Flush()
+			return
+		}
+
+		// Non-streaming path
+		reply, err = (&executor.OllamaExecutor{Model: model, Verbosity: verbosity}).Execute(execMessages)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -292,14 +451,6 @@ func handleChat(historyStore *store.PostgresStore) http.HandlerFunc {
 
 		if err := historyStore.AppendMessagesWithMeta(contextName, agentName, verbosity, stored); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-
-		if req.Stream {
-			if err := streamChatResponse(w, reply, contextName, agentName, verbosity, warning); err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
 			return
 		}
 
@@ -934,54 +1085,3 @@ func applyVerbosityConstraint(messages []chat.Message, verbosity int) []chat.Mes
 	return append([]chat.Message{{Role: "system", Content: constraint}}, out...)
 }
 
-func streamChatResponse(w http.ResponseWriter, reply, contextName, agentName string, verbosity int, warning string) error {
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		return fmt.Errorf("streaming not supported")
-	}
-
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-
-	runes := []rune(reply)
-	const chunkSize = 200
-	for i := 0; i < len(runes); i += chunkSize {
-		end := i + chunkSize
-		if end > len(runes) {
-			end = len(runes)
-		}
-		payload, err := json.Marshal(map[string]any{
-			"delta": string(runes[i:end]),
-		})
-		if err != nil {
-			return err
-		}
-		if _, err := fmt.Fprintf(w, "data: %s\n\n", payload); err != nil {
-			return err
-		}
-		flusher.Flush()
-	}
-
-	final := map[string]any{
-		"done":  true,
-		"reply": reply,
-		"context": map[string]any{
-			"name":      contextName,
-			"agent":     agentName,
-			"verbosity": verbosity,
-		},
-	}
-	if warning != "" {
-		final["warning"] = warning
-	}
-	payload, err := json.Marshal(final)
-	if err != nil {
-		return err
-	}
-	if _, err := fmt.Fprintf(w, "data: %s\n\n", payload); err != nil {
-		return err
-	}
-	flusher.Flush()
-	return nil
-}
