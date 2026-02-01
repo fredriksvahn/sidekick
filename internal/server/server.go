@@ -72,11 +72,13 @@ func handleExecute(modelOverride string, keywordStore store.VerbosityKeywordList
 		}
 
 		lastUserMessage := latestUserMessage(req.Messages)
-		verbosity, warning, err := executor.ResolveVerbosity(r.Context(), req.Verbosity, executor.DefaultVerbosity(), "default", lastUserMessage, keywordStore)
+		escalationResult, err := executor.ResolveVerbosity(r.Context(), req.Verbosity, executor.DefaultVerbosity(), "default", lastUserMessage, keywordStore)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+		verbosity := escalationResult.EffectiveVerbosity
+		warning := escalationResult.Warning
 		messages := applyVerbosityConstraint(req.Messages, verbosity)
 
 		logf := func(msg string) {
@@ -104,7 +106,18 @@ func handleExecute(modelOverride string, keywordStore store.VerbosityKeywordList
 			w.Header().Set("Cache-Control", "no-cache")
 			w.Header().Set("Connection", "keep-alive")
 
-			// Send escalation info event immediately if it occurred
+			// Track whether we've sent at least one SSE event (regression guard)
+			eventSent := false
+
+			// Send "planning" progress event immediately
+			planningPayload, _ := json.Marshal(map[string]any{
+				"stage": "planning",
+			})
+			fmt.Fprintf(w, "event: progress\ndata: %s\n\n", planningPayload)
+			flusher.Flush()
+			eventSent = true
+
+			// Send escalation info event immediately if warnings occurred
 			if warning != "" {
 				infoPayload, _ := json.Marshal(map[string]any{
 					"type":    "info",
@@ -112,6 +125,30 @@ func handleExecute(modelOverride string, keywordStore store.VerbosityKeywordList
 				})
 				fmt.Fprintf(w, "data: %s\n\n", infoPayload)
 				flusher.Flush()
+			}
+
+			// Compute token budget before model execution
+			tokenBudget := executor.EstimateTokenBudget(messages, verbosity)
+
+			// Send "generating" progress event with escalation details
+			generatingData := map[string]any{
+				"stage":               "generating",
+				"effective_verbosity": verbosity,
+				"token_budget":        tokenBudget.TotalEstimatedTokens,
+				"escalated":           escalationResult.Escalated,
+			}
+			if len(escalationResult.MatchedKeywords) > 0 {
+				generatingData["reason"] = escalationResult.MatchedKeywords
+			}
+			generatingPayload, _ := json.Marshal(generatingData)
+			fmt.Fprintf(w, "event: progress\ndata: %s\n\n", generatingPayload)
+			flusher.Flush()
+
+			// Regression guard: fail if no SSE event sent before model execution
+			if !eventSent {
+				fmt.Fprintf(os.Stderr, "[sidekick] CRITICAL: No SSE event sent before model execution\n")
+				http.Error(w, "streaming pipeline failure: no events sent", http.StatusInternalServerError)
+				return
 			}
 
 			// Stream tokens as they arrive from Ollama
@@ -138,6 +175,13 @@ func handleExecute(modelOverride string, keywordStore store.VerbosityKeywordList
 				flusher.Flush()
 				return
 			}
+
+			// Send "finalizing" progress event
+			finalizingPayload, _ := json.Marshal(map[string]any{
+				"stage": "finalizing",
+			})
+			fmt.Fprintf(w, "event: progress\ndata: %s\n\n", finalizingPayload)
+			flusher.Flush()
 
 			// Send final done event
 			finalPayload, _ := json.Marshal(map[string]any{
@@ -291,12 +335,13 @@ func handleChat(historyStore *store.PostgresStore) http.HandlerFunc {
 			verbosityInput = &contextMeta.Verbosity
 		}
 		lastUserMessage := latestUserMessage(req.Messages)
-		verbosity, verbosityWarning, err := executor.ResolveVerbosity(r.Context(), verbosityInput, defaultVerbosity, agentName, lastUserMessage, historyStore)
+		escalationResult, err := executor.ResolveVerbosity(r.Context(), verbosityInput, defaultVerbosity, agentName, lastUserMessage, historyStore)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		warning = joinWarnings(warning, verbosityWarning)
+		verbosity := escalationResult.EffectiveVerbosity
+		warning = joinWarnings(warning, escalationResult.Warning)
 
 		systemPrompt := ""
 		model := ""
@@ -335,7 +380,18 @@ func handleChat(historyStore *store.PostgresStore) http.HandlerFunc {
 			w.Header().Set("Cache-Control", "no-cache")
 			w.Header().Set("Connection", "keep-alive")
 
-			// Send escalation info event immediately if it occurred
+			// Track whether we've sent at least one SSE event (regression guard)
+			eventSent := false
+
+			// Send "planning" progress event immediately
+			planningPayload, _ := json.Marshal(map[string]any{
+				"stage": "planning",
+			})
+			fmt.Fprintf(w, "event: progress\ndata: %s\n\n", planningPayload)
+			flusher.Flush()
+			eventSent = true
+
+			// Send escalation info event immediately if warnings occurred
 			if warning != "" {
 				infoPayload, _ := json.Marshal(map[string]any{
 					"type":    "info",
@@ -343,6 +399,30 @@ func handleChat(historyStore *store.PostgresStore) http.HandlerFunc {
 				})
 				fmt.Fprintf(w, "data: %s\n\n", infoPayload)
 				flusher.Flush()
+			}
+
+			// Compute token budget before model execution
+			tokenBudget := executor.EstimateTokenBudget(execMessages, verbosity)
+
+			// Send "generating" progress event with escalation details
+			generatingData := map[string]any{
+				"stage":               "generating",
+				"effective_verbosity": verbosity,
+				"token_budget":        tokenBudget.TotalEstimatedTokens,
+				"escalated":           escalationResult.Escalated,
+			}
+			if len(escalationResult.MatchedKeywords) > 0 {
+				generatingData["reason"] = escalationResult.MatchedKeywords
+			}
+			generatingPayload, _ := json.Marshal(generatingData)
+			fmt.Fprintf(w, "event: progress\ndata: %s\n\n", generatingPayload)
+			flusher.Flush()
+
+			// Regression guard: fail if no SSE event sent before model execution
+			if !eventSent {
+				fmt.Fprintf(os.Stderr, "[sidekick] CRITICAL: No SSE event sent before model execution\n")
+				http.Error(w, "streaming pipeline failure: no events sent", http.StatusInternalServerError)
+				return
 			}
 
 			// Stream tokens as they arrive from Ollama
@@ -401,6 +481,13 @@ func handleChat(historyStore *store.PostgresStore) http.HandlerFunc {
 				// Log error but can't return it after headers sent
 				fmt.Fprintf(os.Stderr, "[sidekick] failed to persist messages: %v\n", err)
 			}
+
+			// Send "finalizing" progress event
+			finalizingPayload, _ := json.Marshal(map[string]any{
+				"stage": "finalizing",
+			})
+			fmt.Fprintf(w, "event: progress\ndata: %s\n\n", finalizingPayload)
+			flusher.Flush()
 
 			// Send final done event
 			finalPayload, _ := json.Marshal(map[string]any{

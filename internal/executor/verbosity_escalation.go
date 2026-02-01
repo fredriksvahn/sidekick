@@ -8,7 +8,15 @@ import (
 	"github.com/earlysvahn/sidekick/internal/store"
 )
 
-func ResolveVerbosity(ctx context.Context, requested *int, defaultLevel int, agentName string, lastUserMessage string, keywordStore store.VerbosityKeywordLister) (int, string, error) {
+// EscalationResult contains verbosity resolution details
+type EscalationResult struct {
+	EffectiveVerbosity int
+	Warning            string
+	Escalated          bool
+	MatchedKeywords    []string
+}
+
+func ResolveVerbosity(ctx context.Context, requested *int, defaultLevel int, agentName string, lastUserMessage string, keywordStore store.VerbosityKeywordLister) (EscalationResult, error) {
 	warning := ""
 	requestedValue := defaultLevel
 	if requested != nil {
@@ -27,18 +35,36 @@ func ResolveVerbosity(ctx context.Context, requested *int, defaultLevel int, age
 	}
 
 	effectiveVerbosity := biasedVerbosity
+	matchedKeywords := []string{}
+	escalated := false
 
 	if keywordStore != nil && strings.TrimSpace(lastUserMessage) != "" {
 		keywords, err := keywordStore.ListVerbosityKeywords(ctx)
 		if err != nil {
-			return 0, warning, err
+			return EscalationResult{}, err
 		}
 		lowered := strings.ToLower(lastUserMessage)
-		highestEscalateTo := effectiveVerbosity
+
+		// Separate agent-specific and global keywords
+		agentKeywords := []store.VerbosityKeyword{}
+		globalKeywords := []store.VerbosityKeyword{}
+
 		for _, kw := range keywords {
 			if !kw.Enabled {
 				continue
 			}
+			if kw.Agent != nil && *kw.Agent == agentName {
+				agentKeywords = append(agentKeywords, kw)
+			} else if kw.Agent == nil {
+				globalKeywords = append(globalKeywords, kw)
+			}
+		}
+
+		// Try agent-specific keywords first, then global
+		candidateKeywords := append(agentKeywords, globalKeywords...)
+
+		highestEscalateTo := effectiveVerbosity
+		for _, kw := range candidateKeywords {
 			if kw.Keyword == "" {
 				continue
 			}
@@ -51,12 +77,18 @@ func ResolveVerbosity(ctx context.Context, requested *int, defaultLevel int, age
 			if requestedValue >= kw.EscalateTo {
 				continue
 			}
+
+			// Track this keyword as matched
+			matchedKeywords = append(matchedKeywords, kw.Keyword)
+
 			if kw.EscalateTo > highestEscalateTo {
 				highestEscalateTo = kw.EscalateTo
 			}
 		}
+
 		if highestEscalateTo > effectiveVerbosity {
 			effectiveVerbosity = highestEscalateTo
+			escalated = true
 		}
 	}
 
@@ -64,11 +96,16 @@ func ResolveVerbosity(ctx context.Context, requested *int, defaultLevel int, age
 		effectiveVerbosity = v
 	}
 
-	if effectiveVerbosity > biasedVerbosity {
+	if escalated {
 		warning = joinWarning(warning, fmt.Sprintf("verbosity auto-escalated from %d to %d due to detected intent", requestedValue, effectiveVerbosity))
 	}
 
-	return effectiveVerbosity, warning, nil
+	return EscalationResult{
+		EffectiveVerbosity: effectiveVerbosity,
+		Warning:            warning,
+		Escalated:          escalated,
+		MatchedKeywords:    matchedKeywords,
+	}, nil
 }
 
 func agentBaselineBias(agentName string) int {

@@ -241,13 +241,14 @@ func runChatMode(
 			continue
 		}
 
-		effectiveVerbosity, warning, err := executor.ResolveVerbosity(ctx, requestedVerbosity, defaultVerbosity, currentAgent, input, keywordStore)
+		escalationResult, err := executor.ResolveVerbosity(ctx, requestedVerbosity, defaultVerbosity, currentAgent, input, keywordStore)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "[error] %v\n\n", err)
 			continue
 		}
-		if warning != "" {
-			fmt.Fprintf(os.Stderr, "[warning] %s\n", warning)
+		effectiveVerbosity := escalationResult.EffectiveVerbosity
+		if escalationResult.Warning != "" {
+			fmt.Fprintf(os.Stderr, "[warning] %s\n", escalationResult.Warning)
 		}
 
 		// Inject system constraint for low verbosity modes

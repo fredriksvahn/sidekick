@@ -29,11 +29,14 @@ paths:
                   type: integer
                   minimum: 0
                   maximum: 4
+                stream:
+                  type: boolean
+                  description: Enable SSE streaming with real-time tokens and progress events
               required:
                 - messages
       responses:
         '200':
-          description: Reply
+          description: Reply (non-streaming or streaming)
           content:
             application/json:
               schema:
@@ -45,6 +48,26 @@ paths:
                     type: string
                 required:
                   - reply
+            text/event-stream:
+              schema:
+                type: string
+              description: Server-sent events with progress, deltas, and completion
+              example: |
+                event: progress
+                data: {"stage":"planning"}
+
+                event: progress
+                data: {"stage":"generating","effective_verbosity":2,"token_budget":2048,"escalated":false}
+
+                data: {"delta":"Hello"}
+
+                data: {"delta":" world"}
+
+                event: progress
+                data: {"stage":"finalizing"}
+
+                data: {"done":true}
+
         '502':
           description: Upstream execution error
           content:
@@ -70,12 +93,22 @@ paths:
             text/event-stream:
               schema:
                 type: string
+              description: Server-sent events with progress, deltas, and completion
               example: |
+                event: progress
+                data: {"stage":"planning"}
+
+                event: progress
+                data: {"stage":"generating","effective_verbosity":2,"token_budget":2048,"escalated":false}
+
                 data: {"delta":"Hello"}
 
                 data: {"delta":" world"}
 
-                data: {"done":true,"reply":"Hello world","context":{"name":"my-context","agent":"default","verbosity":2}}
+                event: progress
+                data: {"stage":"finalizing"}
+
+                data: {"done":true,"context":{"name":"my-context","agent":"default","verbosity":2}}
 
         '400':
           description: Invalid request
@@ -541,6 +574,10 @@ components:
         keyword:
           type: string
           description: The keyword to match in user messages (primary key)
+        agent:
+          type: string
+          nullable: true
+          description: Agent name for agent-specific escalation (null means global)
         min_requested:
           type: integer
           minimum: 0
@@ -570,6 +607,10 @@ components:
         keyword:
           type: string
           description: The keyword to match in user messages
+        agent:
+          type: string
+          nullable: true
+          description: Agent name for agent-specific escalation (null means global)
         min_requested:
           type: integer
           minimum: 0

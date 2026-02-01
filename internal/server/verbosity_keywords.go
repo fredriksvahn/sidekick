@@ -26,17 +26,19 @@ func handleVerbosityKeywords(keywordStore store.VerbosityKeywordStore) http.Hand
 			}
 
 			type keywordResponse struct {
-				Keyword      string `json:"keyword"`
-				MinRequested int    `json:"min_requested"`
-				EscalateTo   int    `json:"escalate_to"`
-				Enabled      bool   `json:"enabled"`
-				CreatedAt    string `json:"created_at"`
+				Keyword      string  `json:"keyword"`
+				Agent        *string `json:"agent,omitempty"`
+				MinRequested int     `json:"min_requested"`
+				EscalateTo   int     `json:"escalate_to"`
+				Enabled      bool    `json:"enabled"`
+				CreatedAt    string  `json:"created_at"`
 			}
 
 			resp := make([]keywordResponse, 0, len(keywords))
 			for _, kw := range keywords {
 				resp = append(resp, keywordResponse{
 					Keyword:      kw.Keyword,
+					Agent:        kw.Agent,
 					MinRequested: kw.MinRequested,
 					EscalateTo:   kw.EscalateTo,
 					Enabled:      kw.Enabled,
@@ -48,10 +50,11 @@ func handleVerbosityKeywords(keywordStore store.VerbosityKeywordStore) http.Hand
 			_ = json.NewEncoder(w).Encode(resp)
 		case http.MethodPost:
 			var input struct {
-				Keyword      string `json:"keyword"`
-				MinRequested *int   `json:"min_requested"`
-				EscalateTo   *int   `json:"escalate_to"`
-				Enabled      *bool  `json:"enabled"`
+				Keyword      string  `json:"keyword"`
+				Agent        *string `json:"agent,omitempty"`
+				MinRequested *int    `json:"min_requested"`
+				EscalateTo   *int    `json:"escalate_to"`
+				Enabled      *bool   `json:"enabled"`
 			}
 			if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
 				http.Error(w, "invalid JSON", http.StatusBadRequest)
@@ -82,7 +85,7 @@ func handleVerbosityKeywords(keywordStore store.VerbosityKeywordStore) http.Hand
 				return
 			}
 
-			kw, err := keywordStore.CreateVerbosityKeyword(r.Context(), keyword, *input.MinRequested, *input.EscalateTo, enabled)
+			kw, err := keywordStore.CreateVerbosityKeyword(r.Context(), keyword, input.Agent, *input.MinRequested, *input.EscalateTo, enabled)
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
@@ -90,13 +93,17 @@ func handleVerbosityKeywords(keywordStore store.VerbosityKeywordStore) http.Hand
 
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusCreated)
-			_ = json.NewEncoder(w).Encode(map[string]any{
+			resp := map[string]any{
 				"keyword":       kw.Keyword,
 				"min_requested": kw.MinRequested,
 				"escalate_to":   kw.EscalateTo,
 				"enabled":       kw.Enabled,
 				"created_at":    kw.CreatedAt.UTC().Format(time.RFC3339),
-			})
+			}
+			if kw.Agent != nil {
+				resp["agent"] = *kw.Agent
+			}
+			_ = json.NewEncoder(w).Encode(resp)
 		default:
 			w.WriteHeader(http.StatusMethodNotAllowed)
 		}

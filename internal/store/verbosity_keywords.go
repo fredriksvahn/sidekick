@@ -10,6 +10,7 @@ import (
 
 type VerbosityKeyword struct {
 	Keyword      string    `json:"keyword"`
+	Agent        *string   `json:"agent,omitempty"` // NULL means global
 	MinRequested int       `json:"min_requested"`
 	EscalateTo   int       `json:"escalate_to"`
 	Enabled      bool      `json:"enabled"`
@@ -28,7 +29,7 @@ type VerbosityKeywordLister interface {
 
 type VerbosityKeywordStore interface {
 	VerbosityKeywordLister
-	CreateVerbosityKeyword(ctx context.Context, keyword string, minRequested, escalateTo int, enabled bool) (VerbosityKeyword, error)
+	CreateVerbosityKeyword(ctx context.Context, keyword string, agent *string, minRequested, escalateTo int, enabled bool) (VerbosityKeyword, error)
 	UpdateVerbosityKeyword(ctx context.Context, keyword string, input VerbosityKeywordUpdate) (VerbosityKeyword, error)
 	DeleteVerbosityKeyword(ctx context.Context, keyword string) error
 }
@@ -41,7 +42,7 @@ func (NoopVerbosityKeywordStore) ListVerbosityKeywords(ctx context.Context) ([]V
 
 func (s *PostgresStore) ListVerbosityKeywords(ctx context.Context) ([]VerbosityKeyword, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT keyword, min_requested_verbosity, escalate_to, enabled, created_at
+		SELECT keyword, agent, min_requested_verbosity, escalate_to, enabled, created_at
 		FROM verbosity_escalation_keywords
 		ORDER BY length(keyword) DESC, keyword ASC
 	`)
@@ -53,7 +54,7 @@ func (s *PostgresStore) ListVerbosityKeywords(ctx context.Context) ([]VerbosityK
 	var keywords []VerbosityKeyword
 	for rows.Next() {
 		var kw VerbosityKeyword
-		if err := rows.Scan(&kw.Keyword, &kw.MinRequested, &kw.EscalateTo, &kw.Enabled, &kw.CreatedAt); err != nil {
+		if err := rows.Scan(&kw.Keyword, &kw.Agent, &kw.MinRequested, &kw.EscalateTo, &kw.Enabled, &kw.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan verbosity keyword: %w", err)
 		}
 		keywords = append(keywords, kw)
@@ -64,14 +65,15 @@ func (s *PostgresStore) ListVerbosityKeywords(ctx context.Context) ([]VerbosityK
 	return keywords, nil
 }
 
-func (s *PostgresStore) CreateVerbosityKeyword(ctx context.Context, keyword string, minRequested, escalateTo int, enabled bool) (VerbosityKeyword, error) {
+func (s *PostgresStore) CreateVerbosityKeyword(ctx context.Context, keyword string, agent *string, minRequested, escalateTo int, enabled bool) (VerbosityKeyword, error) {
 	var kw VerbosityKeyword
 	err := s.db.QueryRowContext(ctx, `
-		INSERT INTO verbosity_escalation_keywords (keyword, min_requested_verbosity, escalate_to, enabled)
-		VALUES ($1, $2, $3, $4)
-		RETURNING keyword, min_requested_verbosity, escalate_to, enabled, created_at
-	`, keyword, minRequested, escalateTo, enabled).Scan(
+		INSERT INTO verbosity_escalation_keywords (keyword, agent, min_requested_verbosity, escalate_to, enabled)
+		VALUES ($1, $2, $3, $4, $5)
+		RETURNING keyword, agent, min_requested_verbosity, escalate_to, enabled, created_at
+	`, keyword, agent, minRequested, escalateTo, enabled).Scan(
 		&kw.Keyword,
+		&kw.Agent,
 		&kw.MinRequested,
 		&kw.EscalateTo,
 		&kw.Enabled,
@@ -113,12 +115,13 @@ func (s *PostgresStore) UpdateVerbosityKeyword(ctx context.Context, keyword stri
 		UPDATE verbosity_escalation_keywords
 		SET %s
 		WHERE keyword = $%d
-		RETURNING keyword, min_requested_verbosity, escalate_to, enabled, created_at
+		RETURNING keyword, agent, min_requested_verbosity, escalate_to, enabled, created_at
 	`, strings.Join(sets, ", "), argID)
 
 	var kw VerbosityKeyword
 	err := s.db.QueryRowContext(ctx, query, args...).Scan(
 		&kw.Keyword,
+		&kw.Agent,
 		&kw.MinRequested,
 		&kw.EscalateTo,
 		&kw.Enabled,

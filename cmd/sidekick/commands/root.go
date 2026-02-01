@@ -120,12 +120,13 @@ func RunOneShot(args []string) error {
 	if agentProfile != "" {
 		agentName = agentProfile
 	}
-	effectiveVerbosity, warning, err := executor.ResolveVerbosity(context.Background(), requestedVerbosity, executor.DefaultVerbosity(), agentName, rawPrompt, keywordStore)
+	escalationResult, err := executor.ResolveVerbosity(context.Background(), requestedVerbosity, executor.DefaultVerbosity(), agentName, rawPrompt, keywordStore)
 	if err != nil {
 		return fmt.Errorf("verbosity escalation error: %w", err)
 	}
-	if warning != "" {
-		fmt.Fprintf(os.Stderr, "[warning] %s\n", warning)
+	effectiveVerbosity := escalationResult.EffectiveVerbosity
+	if escalationResult.Warning != "" {
+		fmt.Fprintf(os.Stderr, "[warning] %s\n", escalationResult.Warning)
 	}
 
 	// Inject system constraint for low verbosity modes
