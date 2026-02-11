@@ -17,7 +17,8 @@ func NewPostgresRepository(db *sql.DB) *PostgresRepository {
 	return &PostgresRepository{db: db}
 }
 
-// InitSchema creates the agents table if it doesn't exist.
+// InitSchema creates the agents table if it doesn't exist, and adds any
+// columns missing from older versions of the table.
 func (r *PostgresRepository) InitSchema() error {
 	schema := `
 	CREATE TABLE IF NOT EXISTS agents (
@@ -31,6 +32,12 @@ func (r *PostgresRepository) InitSchema() error {
 		revision INTEGER NOT NULL DEFAULT 1,
 		updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 	);
+
+	-- Migrate existing tables that predate these columns.
+	ALTER TABLE agents ADD COLUMN IF NOT EXISTS enabled BOOLEAN NOT NULL DEFAULT TRUE;
+	ALTER TABLE agents ADD COLUMN IF NOT EXISTS revision INTEGER NOT NULL DEFAULT 1;
+	ALTER TABLE agents ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP;
+
 	CREATE INDEX IF NOT EXISTS idx_agents_enabled ON agents(enabled);
 	CREATE INDEX IF NOT EXISTS idx_agents_name ON agents(name);
 	`

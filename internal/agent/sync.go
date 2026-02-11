@@ -82,7 +82,8 @@ func PullFromPostgres(sqliteDB, postgresDB *sql.DB) error {
 	return nil
 }
 
-// initPostgresSchema creates the agents table in Postgres if it doesn't exist.
+// initPostgresSchema creates the agents table in Postgres if it doesn't exist,
+// and adds any columns missing from older versions of the table.
 // Schema matches SQLite for compatibility.
 func initPostgresSchema(db *sql.DB) error {
 	schema := `
@@ -97,6 +98,12 @@ func initPostgresSchema(db *sql.DB) error {
 		revision INTEGER NOT NULL DEFAULT 1,
 		updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 	);
+
+	-- Migrate existing tables that predate these columns.
+	ALTER TABLE agents ADD COLUMN IF NOT EXISTS enabled BOOLEAN NOT NULL DEFAULT TRUE;
+	ALTER TABLE agents ADD COLUMN IF NOT EXISTS revision INTEGER NOT NULL DEFAULT 1;
+	ALTER TABLE agents ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP;
+
 	CREATE INDEX IF NOT EXISTS idx_agents_enabled ON agents(enabled);
 	CREATE INDEX IF NOT EXISTS idx_agents_name ON agents(name);
 	`
