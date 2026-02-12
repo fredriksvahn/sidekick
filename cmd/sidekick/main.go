@@ -6,6 +6,7 @@ import (
 
 	"github.com/earlysvahn/sidekick/cmd/sidekick/commands"
 	"github.com/earlysvahn/sidekick/internal/agent"
+	"github.com/earlysvahn/sidekick/internal/auth"
 	"github.com/earlysvahn/sidekick/internal/db"
 	"github.com/earlysvahn/sidekick/internal/server"
 	"github.com/earlysvahn/sidekick/internal/store"
@@ -143,7 +144,21 @@ func runServer() error {
 	// Set global agent repository
 	agent.SetRepository(agentRepo)
 
+	// Auth: create users/sessions tables (idempotent)
+	if err := auth.InitSchema(postgresDB); err != nil {
+		historyStore.Close()
+		postgresDB.Close()
+		return fmt.Errorf("failed to init auth schema: %w", err)
+	}
+
+	// Auth: create bootstrap user from env vars if not already present
+	if err := auth.EnsureBootstrapUser(postgresDB); err != nil {
+		historyStore.Close()
+		postgresDB.Close()
+		return fmt.Errorf("failed to ensure bootstrap user: %w", err)
+	}
+
 	fmt.Fprintf(os.Stderr, "[sidekick] using Postgres for storage\n")
 
-	return server.Run("", historyStore, agentRepo)
+	return server.Run("", historyStore, agentRepo, postgresDB)
 }

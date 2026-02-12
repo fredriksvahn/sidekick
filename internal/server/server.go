@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/earlysvahn/sidekick/internal/agent"
+	"github.com/earlysvahn/sidekick/internal/auth"
 	"github.com/earlysvahn/sidekick/internal/chat"
 	"github.com/earlysvahn/sidekick/internal/executor"
 	"github.com/earlysvahn/sidekick/internal/store"
@@ -19,7 +20,7 @@ import (
 const DefaultAddr = "0.0.0.0:1337"
 
 // Run starts the HTTP server
-func Run(modelOverride string, historyStore *store.PostgresStore, agentRepo agent.AgentRepository) error {
+func Run(modelOverride string, historyStore *store.PostgresStore, agentRepo agent.AgentRepository, db *sql.DB) error {
 	// Explicitly bind to IPv4 to ensure LAN reachability on Windows/WSL2
 	listener, err := net.Listen("tcp4", DefaultAddr)
 	if err != nil {
@@ -27,21 +28,29 @@ func Run(modelOverride string, historyStore *store.PostgresStore, agentRepo agen
 	}
 	fmt.Fprintf(os.Stderr, "[sidekick] listening on %s\n", listener.Addr())
 
+	// Auth routes (login and logout do not require an existing session)
+	http.HandleFunc("/auth/login", auth.HandleLogin(db))
+	http.HandleFunc("/auth/logout", auth.HandleLogout(db))
+	http.HandleFunc("/auth/me", auth.RequireAuth(db, auth.HandleMe(db)))
+
+	// Health probe (no auth)
 	http.HandleFunc("/health", handleHealth)
-	http.HandleFunc("/execute", handleExecute(modelOverride, historyStore))
-	http.HandleFunc("/chat", handleChat(historyStore))
-	http.HandleFunc("/api/chat", handleLegacyChat(historyStore))
-	http.HandleFunc("/settings", handleSettings)
-	http.HandleFunc("/agents", handleAPIAgents(agentRepo))
-	http.HandleFunc("/agents/", handleAPIAgent(agentRepo))
-	http.HandleFunc("/api/agents", handleAPIAgents(agentRepo))
-	http.HandleFunc("/api/agents/", handleAPIAgent(agentRepo))
-	http.HandleFunc("/api/contexts", handleAPIContexts(historyStore))
-	http.HandleFunc("/api/contexts/", handleAPIContext(historyStore))
-	http.HandleFunc("/contexts", handleContexts(historyStore))
-	http.HandleFunc("/contexts/", handleContextRoutes(historyStore))
-	http.HandleFunc("/verbosity/keywords", handleVerbosityKeywords(historyStore))
-	http.HandleFunc("/verbosity/keywords/", handleVerbosityKeyword(historyStore))
+
+	// All business routes require a valid session
+	http.HandleFunc("/execute", auth.RequireAuth(db, handleExecute(modelOverride, historyStore)))
+	http.HandleFunc("/chat", auth.RequireAuth(db, handleChat(historyStore)))
+	http.HandleFunc("/api/chat", auth.RequireAuth(db, handleLegacyChat(historyStore)))
+	http.HandleFunc("/settings", auth.RequireAuth(db, handleSettings))
+	http.HandleFunc("/agents", auth.RequireAuth(db, handleAPIAgents(agentRepo)))
+	http.HandleFunc("/agents/", auth.RequireAuth(db, handleAPIAgent(agentRepo)))
+	http.HandleFunc("/api/agents", auth.RequireAuth(db, handleAPIAgents(agentRepo)))
+	http.HandleFunc("/api/agents/", auth.RequireAuth(db, handleAPIAgent(agentRepo)))
+	http.HandleFunc("/api/contexts", auth.RequireAuth(db, handleAPIContexts(historyStore)))
+	http.HandleFunc("/api/contexts/", auth.RequireAuth(db, handleAPIContext(historyStore)))
+	http.HandleFunc("/contexts", auth.RequireAuth(db, handleContexts(historyStore)))
+	http.HandleFunc("/contexts/", auth.RequireAuth(db, handleContextRoutes(historyStore)))
+	http.HandleFunc("/verbosity/keywords", auth.RequireAuth(db, handleVerbosityKeywords(historyStore)))
+	http.HandleFunc("/verbosity/keywords/", auth.RequireAuth(db, handleVerbosityKeyword(historyStore)))
 
 	return http.Serve(listener, nil)
 }
@@ -72,7 +81,7 @@ func handleExecute(modelOverride string, keywordStore store.VerbosityKeywordList
 		}
 
 		lastUserMessage := latestUserMessage(req.Messages)
-		escalationResult, err := executor.ResolveVerbosity(r.Context(), req.Verbosity, executor.DefaultVerbosity(), "default", lastUserMessage, keywordStore)
+		escalationResult, err := executor.ResolveVerbosity(r.Context(), req.Verbosity, executor.DefaultVerbosity(), "default", lastUserMessage, "", keywordStore)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -215,6 +224,12 @@ func handleLegacyChat(historyStore *store.PostgresStore) http.HandlerFunc {
 			return
 		}
 
+		userID, ok := auth.UserIDFromContext(r.Context())
+		if !ok {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+
 		var req struct {
 			Context   string `json:"context"`
 			Agent     string `json:"agent"`
@@ -267,7 +282,7 @@ func handleLegacyChat(historyStore *store.PostgresStore) http.HandlerFunc {
 		}
 
 		// Contexts are created implicitly when the first message is written.
-		if err := historyStore.AppendMessagesWithMeta(contextName, agentName, verbosity, messages); err != nil {
+		if err := historyStore.AppendMessagesWithMeta(userID.String(), contextName, agentName, verbosity, messages); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -281,6 +296,12 @@ func handleChat(historyStore *store.PostgresStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+
+		userID, ok := auth.UserIDFromContext(r.Context())
+		if !ok {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
 
@@ -308,7 +329,7 @@ func handleChat(historyStore *store.PostgresStore) http.HandlerFunc {
 		defaultAgent := "default"
 		defaultVerbosity := executor.DefaultVerbosity()
 
-		contextMeta, hasContext, err := historyStore.GetContextMeta(contextName)
+		contextMeta, hasContext, err := historyStore.GetContextMeta(userID.String(), contextName)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -335,7 +356,7 @@ func handleChat(historyStore *store.PostgresStore) http.HandlerFunc {
 			verbosityInput = &contextMeta.Verbosity
 		}
 		lastUserMessage := latestUserMessage(req.Messages)
-		escalationResult, err := executor.ResolveVerbosity(r.Context(), verbosityInput, defaultVerbosity, agentName, lastUserMessage, historyStore)
+		escalationResult, err := executor.ResolveVerbosity(r.Context(), verbosityInput, defaultVerbosity, agentName, lastUserMessage, userID.String(), historyStore)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -357,7 +378,7 @@ func handleChat(historyStore *store.PostgresStore) http.HandlerFunc {
 			}
 		}
 
-		ctxHist, err := historyStore.LoadContext(contextName)
+		ctxHist, err := historyStore.LoadContext(userID.String(), contextName)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -477,7 +498,7 @@ func handleChat(historyStore *store.PostgresStore) http.HandlerFunc {
 				Time:      assistantTime,
 			})
 
-			if err := historyStore.AppendMessagesWithMeta(contextName, agentName, verbosity, stored); err != nil {
+			if err := historyStore.AppendMessagesWithMeta(userID.String(), contextName, agentName, verbosity, stored); err != nil {
 				// Log error but can't return it after headers sent
 				fmt.Fprintf(os.Stderr, "[sidekick] failed to persist messages: %v\n", err)
 			}
@@ -536,7 +557,7 @@ func handleChat(historyStore *store.PostgresStore) http.HandlerFunc {
 			Time:      assistantTime,
 		})
 
-		if err := historyStore.AppendMessagesWithMeta(contextName, agentName, verbosity, stored); err != nil {
+		if err := historyStore.AppendMessagesWithMeta(userID.String(), contextName, agentName, verbosity, stored); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -849,7 +870,13 @@ func handleAPIContexts(historyStore *store.PostgresStore) http.HandlerFunc {
 			return
 		}
 
-		contexts, err := historyStore.ListContexts()
+		userID, ok := auth.UserIDFromContext(r.Context())
+		if !ok {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		contexts, err := historyStore.ListContexts(userID.String())
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -879,6 +906,12 @@ func handleAPIContexts(historyStore *store.PostgresStore) http.HandlerFunc {
 
 func handleAPIContext(historyStore *store.PostgresStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		userID, ok := auth.UserIDFromContext(r.Context())
+		if !ok {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+
 		name := strings.TrimPrefix(r.URL.Path, "/api/contexts/")
 		name = strings.TrimSuffix(name, "/")
 		if name == "" {
@@ -902,7 +935,7 @@ func handleAPIContext(historyStore *store.PostgresStore) http.HandlerFunc {
 				return
 			}
 
-			updated, err := historyStore.UpdateContext(name, req.Name, req.Agent, req.Verbosity)
+			updated, err := historyStore.UpdateContext(userID.String(), name, req.Name, req.Agent, req.Verbosity)
 			if err != nil {
 				if err == sql.ErrNoRows {
 					http.Error(w, "context not found", http.StatusNotFound)
@@ -923,7 +956,7 @@ func handleAPIContext(historyStore *store.PostgresStore) http.HandlerFunc {
 				"verbosity": updated.Verbosity,
 			})
 		case http.MethodDelete:
-			if err := historyStore.DeleteContext(name); err != nil {
+			if err := historyStore.DeleteContext(userID.String(), name); err != nil {
 				if err == sql.ErrNoRows {
 					http.Error(w, "context not found", http.StatusNotFound)
 					return
@@ -938,14 +971,20 @@ func handleAPIContext(historyStore *store.PostgresStore) http.HandlerFunc {
 	}
 }
 
-func handleContexts(historyStore store.HistoryStore) http.HandlerFunc {
+func handleContexts(historyStore *store.PostgresStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
 		}
 
-		contexts, err := historyStore.ListContexts()
+		userID, ok := auth.UserIDFromContext(r.Context())
+		if !ok {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		contexts, err := historyStore.ListContexts(userID.String())
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -975,6 +1014,12 @@ func handleContexts(historyStore store.HistoryStore) http.HandlerFunc {
 
 func handleContextRoutes(historyStore *store.PostgresStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		userID, ok := auth.UserIDFromContext(r.Context())
+		if !ok {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+
 		path := strings.TrimPrefix(r.URL.Path, "/contexts/")
 		path = strings.TrimSuffix(path, "/")
 		if path == "" {
@@ -995,7 +1040,7 @@ func handleContextRoutes(historyStore *store.PostgresStore) http.HandlerFunc {
 				return
 			}
 
-			ctxHist, err := historyStore.LoadContext(contextName)
+			ctxHist, err := historyStore.LoadContext(userID.String(), contextName)
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
@@ -1052,7 +1097,7 @@ func handleContextRoutes(historyStore *store.PostgresStore) http.HandlerFunc {
 				return
 			}
 
-			updated, err := historyStore.UpdateContext(contextName, req.Name, req.Agent, req.Verbosity)
+			updated, err := historyStore.UpdateContext(userID.String(), contextName, req.Name, req.Agent, req.Verbosity)
 			if err != nil {
 				if err == sql.ErrNoRows {
 					http.Error(w, "context not found", http.StatusNotFound)
@@ -1073,7 +1118,7 @@ func handleContextRoutes(historyStore *store.PostgresStore) http.HandlerFunc {
 				"verbosity": updated.Verbosity,
 			})
 		case http.MethodDelete:
-			if err := historyStore.DeleteContext(contextName); err != nil {
+			if err := historyStore.DeleteContext(userID.String(), contextName); err != nil {
 				if err == sql.ErrNoRows {
 					http.Error(w, "context not found", http.StatusNotFound)
 					return

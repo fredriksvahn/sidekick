@@ -60,7 +60,11 @@ func CreateHistoryStore(backend string) (store.HistoryStore, error) {
 		if dsn == "" {
 			return nil, fmt.Errorf("SIDEKICK_POSTGRES_DSN environment variable is required for postgres storage")
 		}
-		return store.NewPostgresStore(dsn)
+		pgStore, err := store.NewPostgresStore(dsn)
+		if err != nil {
+			return nil, err
+		}
+		return store.NewCLIPostgresAdapter(pgStore), nil
 	default:
 		return nil, fmt.Errorf("unknown storage backend: %s (must be 'file', 'sqlite', or 'postgres')", backend)
 	}

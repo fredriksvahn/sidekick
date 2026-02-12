@@ -120,7 +120,7 @@ func RunOneShot(args []string) error {
 	if agentProfile != "" {
 		agentName = agentProfile
 	}
-	escalationResult, err := executor.ResolveVerbosity(context.Background(), requestedVerbosity, executor.DefaultVerbosity(), agentName, rawPrompt, keywordStore)
+	escalationResult, err := executor.ResolveVerbosity(context.Background(), requestedVerbosity, executor.DefaultVerbosity(), agentName, rawPrompt, "", keywordStore)
 	if err != nil {
 		return fmt.Errorf("verbosity escalation error: %w", err)
 	}

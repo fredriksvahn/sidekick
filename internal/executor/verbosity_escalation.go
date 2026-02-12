@@ -16,7 +16,7 @@ type EscalationResult struct {
 	MatchedKeywords    []string
 }
 
-func ResolveVerbosity(ctx context.Context, requested *int, defaultLevel int, agentName string, lastUserMessage string, keywordStore store.VerbosityKeywordLister) (EscalationResult, error) {
+func ResolveVerbosity(ctx context.Context, requested *int, defaultLevel int, agentName string, lastUserMessage string, userID string, keywordStore store.VerbosityKeywordLister) (EscalationResult, error) {
 	warning := ""
 	requestedValue := defaultLevel
 	if requested != nil {
@@ -38,8 +38,8 @@ func ResolveVerbosity(ctx context.Context, requested *int, defaultLevel int, age
 	matchedKeywords := []string{}
 	escalated := false
 
-	if keywordStore != nil && strings.TrimSpace(lastUserMessage) != "" {
-		keywords, err := keywordStore.ListVerbosityKeywords(ctx)
+	if keywordStore != nil && strings.TrimSpace(lastUserMessage) != "" && userID != "" {
+		keywords, err := keywordStore.ListVerbosityKeywords(ctx, userID)
 		if err != nil {
 			return EscalationResult{}, err
 		}

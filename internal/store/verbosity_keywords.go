@@ -24,28 +24,29 @@ type VerbosityKeywordUpdate struct {
 }
 
 type VerbosityKeywordLister interface {
-	ListVerbosityKeywords(ctx context.Context) ([]VerbosityKeyword, error)
+	ListVerbosityKeywords(ctx context.Context, userID string) ([]VerbosityKeyword, error)
 }
 
 type VerbosityKeywordStore interface {
 	VerbosityKeywordLister
-	CreateVerbosityKeyword(ctx context.Context, keyword string, agent *string, minRequested, escalateTo int, enabled bool) (VerbosityKeyword, error)
-	UpdateVerbosityKeyword(ctx context.Context, keyword string, input VerbosityKeywordUpdate) (VerbosityKeyword, error)
-	DeleteVerbosityKeyword(ctx context.Context, keyword string) error
+	CreateVerbosityKeyword(ctx context.Context, userID, keyword string, agent *string, minRequested, escalateTo int, enabled bool) (VerbosityKeyword, error)
+	UpdateVerbosityKeyword(ctx context.Context, userID, keyword string, input VerbosityKeywordUpdate) (VerbosityKeyword, error)
+	DeleteVerbosityKeyword(ctx context.Context, userID, keyword string) error
 }
 
 type NoopVerbosityKeywordStore struct{}
 
-func (NoopVerbosityKeywordStore) ListVerbosityKeywords(ctx context.Context) ([]VerbosityKeyword, error) {
+func (NoopVerbosityKeywordStore) ListVerbosityKeywords(ctx context.Context, userID string) ([]VerbosityKeyword, error) {
 	return []VerbosityKeyword{}, nil
 }
 
-func (s *PostgresStore) ListVerbosityKeywords(ctx context.Context) ([]VerbosityKeyword, error) {
+func (s *PostgresStore) ListVerbosityKeywords(ctx context.Context, userID string) ([]VerbosityKeyword, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT keyword, agent, min_requested_verbosity, escalate_to, enabled, created_at
 		FROM verbosity_escalation_keywords
+		WHERE user_id = $1
 		ORDER BY length(keyword) DESC, keyword ASC
-	`)
+	`, userID)
 	if err != nil {
 		return nil, fmt.Errorf("list verbosity keywords: %w", err)
 	}
@@ -65,13 +66,13 @@ func (s *PostgresStore) ListVerbosityKeywords(ctx context.Context) ([]VerbosityK
 	return keywords, nil
 }
 
-func (s *PostgresStore) CreateVerbosityKeyword(ctx context.Context, keyword string, agent *string, minRequested, escalateTo int, enabled bool) (VerbosityKeyword, error) {
+func (s *PostgresStore) CreateVerbosityKeyword(ctx context.Context, userID, keyword string, agent *string, minRequested, escalateTo int, enabled bool) (VerbosityKeyword, error) {
 	var kw VerbosityKeyword
 	err := s.db.QueryRowContext(ctx, `
-		INSERT INTO verbosity_escalation_keywords (keyword, agent, min_requested_verbosity, escalate_to, enabled)
-		VALUES ($1, $2, $3, $4, $5)
+		INSERT INTO verbosity_escalation_keywords (user_id, keyword, agent, min_requested_verbosity, escalate_to, enabled)
+		VALUES ($1, $2, $3, $4, $5, $6)
 		RETURNING keyword, agent, min_requested_verbosity, escalate_to, enabled, created_at
-	`, keyword, agent, minRequested, escalateTo, enabled).Scan(
+	`, userID, keyword, agent, minRequested, escalateTo, enabled).Scan(
 		&kw.Keyword,
 		&kw.Agent,
 		&kw.MinRequested,
@@ -85,9 +86,9 @@ func (s *PostgresStore) CreateVerbosityKeyword(ctx context.Context, keyword stri
 	return kw, nil
 }
 
-func (s *PostgresStore) UpdateVerbosityKeyword(ctx context.Context, keyword string, input VerbosityKeywordUpdate) (VerbosityKeyword, error) {
+func (s *PostgresStore) UpdateVerbosityKeyword(ctx context.Context, userID, keyword string, input VerbosityKeywordUpdate) (VerbosityKeyword, error) {
 	sets := make([]string, 0, 3)
-	args := make([]any, 0, 4)
+	args := make([]any, 0, 5)
 	argID := 1
 
 	if input.MinRequested != nil {
@@ -110,13 +111,13 @@ func (s *PostgresStore) UpdateVerbosityKeyword(ctx context.Context, keyword stri
 		return VerbosityKeyword{}, fmt.Errorf("no fields to update")
 	}
 
-	args = append(args, keyword)
+	args = append(args, userID, keyword)
 	query := fmt.Sprintf(`
 		UPDATE verbosity_escalation_keywords
 		SET %s
-		WHERE keyword = $%d
+		WHERE user_id = $%d AND keyword = $%d
 		RETURNING keyword, agent, min_requested_verbosity, escalate_to, enabled, created_at
-	`, strings.Join(sets, ", "), argID)
+	`, strings.Join(sets, ", "), argID, argID+1)
 
 	var kw VerbosityKeyword
 	err := s.db.QueryRowContext(ctx, query, args...).Scan(
@@ -136,8 +137,8 @@ func (s *PostgresStore) UpdateVerbosityKeyword(ctx context.Context, keyword stri
 	return kw, nil
 }
 
-func (s *PostgresStore) DeleteVerbosityKeyword(ctx context.Context, keyword string) error {
-	res, err := s.db.ExecContext(ctx, `DELETE FROM verbosity_escalation_keywords WHERE keyword = $1`, keyword)
+func (s *PostgresStore) DeleteVerbosityKeyword(ctx context.Context, userID, keyword string) error {
+	res, err := s.db.ExecContext(ctx, `DELETE FROM verbosity_escalation_keywords WHERE user_id = $1 AND keyword = $2`, userID, keyword)
 	if err != nil {
 		return fmt.Errorf("delete verbosity keyword: %w", err)
 	}

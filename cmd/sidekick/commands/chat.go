@@ -241,7 +241,7 @@ func runChatMode(
 			continue
 		}
 
-		escalationResult, err := executor.ResolveVerbosity(ctx, requestedVerbosity, defaultVerbosity, currentAgent, input, keywordStore)
+		escalationResult, err := executor.ResolveVerbosity(ctx, requestedVerbosity, defaultVerbosity, currentAgent, input, "", keywordStore)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "[error] %v\n\n", err)
 			continue

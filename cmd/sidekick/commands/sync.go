@@ -38,10 +38,14 @@ func RunSyncCommand(args []string) error {
 	if !ok {
 		return fmt.Errorf("SIDEKICK_POSTGRES_DSN environment variable is required for sync")
 	}
-	postgresStore, err := store.NewPostgresStore(dsn)
+	pgStore, err := store.NewPostgresStore(dsn)
 	if err != nil {
 		return fmt.Errorf("failed to open Postgres: %w", err)
 	}
+	defer pgStore.Close()
+
+	// Wrap PostgresStore for CLI compatibility
+	postgresStore := store.NewCLIPostgresAdapter(pgStore)
 
 	var source, target store.HistoryStore
 	var sourceName, targetName string

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/earlysvahn/sidekick/internal/auth"
 	"github.com/earlysvahn/sidekick/internal/store"
 )
 
@@ -17,9 +18,15 @@ func handleVerbosityKeywords(keywordStore store.VerbosityKeywordStore) http.Hand
 			return
 		}
 
+		userID, ok := auth.UserIDFromContext(r.Context())
+		if !ok {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+
 		switch r.Method {
 		case http.MethodGet:
-			keywords, err := keywordStore.ListVerbosityKeywords(r.Context())
+			keywords, err := keywordStore.ListVerbosityKeywords(r.Context(), userID.String())
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
@@ -85,7 +92,7 @@ func handleVerbosityKeywords(keywordStore store.VerbosityKeywordStore) http.Hand
 				return
 			}
 
-			kw, err := keywordStore.CreateVerbosityKeyword(r.Context(), keyword, input.Agent, *input.MinRequested, *input.EscalateTo, enabled)
+			kw, err := keywordStore.CreateVerbosityKeyword(r.Context(), userID.String(), keyword, input.Agent, *input.MinRequested, *input.EscalateTo, enabled)
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
@@ -117,6 +124,12 @@ func handleVerbosityKeyword(keywordStore store.VerbosityKeywordStore) http.Handl
 			return
 		}
 
+		userID, ok := auth.UserIDFromContext(r.Context())
+		if !ok {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+
 		keyword := strings.TrimPrefix(r.URL.Path, "/verbosity/keywords/")
 		keyword = strings.TrimSuffix(keyword, "/")
 		if keyword == "" {
@@ -142,7 +155,7 @@ func handleVerbosityKeyword(keywordStore store.VerbosityKeywordStore) http.Handl
 			}
 
 			// Fetch existing keyword to validate escalate_to >= min_requested
-			keywords, err := keywordStore.ListVerbosityKeywords(r.Context())
+			keywords, err := keywordStore.ListVerbosityKeywords(r.Context(), userID.String())
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
@@ -172,7 +185,7 @@ func handleVerbosityKeyword(keywordStore store.VerbosityKeywordStore) http.Handl
 				return
 			}
 
-			updated, err := keywordStore.UpdateVerbosityKeyword(r.Context(), keyword, store.VerbosityKeywordUpdate{
+			updated, err := keywordStore.UpdateVerbosityKeyword(r.Context(), userID.String(), keyword, store.VerbosityKeywordUpdate{
 				MinRequested: input.MinRequested,
 				EscalateTo:   input.EscalateTo,
 				Enabled:      input.Enabled,
@@ -195,7 +208,7 @@ func handleVerbosityKeyword(keywordStore store.VerbosityKeywordStore) http.Handl
 				"created_at":    updated.CreatedAt.UTC().Format(time.RFC3339),
 			})
 		case http.MethodDelete:
-			if err := keywordStore.DeleteVerbosityKeyword(r.Context(), keyword); err != nil {
+			if err := keywordStore.DeleteVerbosityKeyword(r.Context(), userID.String(), keyword); err != nil {
 				if err == sql.ErrNoRows {
 					http.Error(w, "keyword not found", http.StatusNotFound)
 					return

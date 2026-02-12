@@ -11,6 +11,9 @@ type PostgresStore struct {
 	db *sql.DB
 }
 
+// CLI_DEFAULT_USER_ID is used for CLI operations that don't have multi-user authentication
+const CLI_DEFAULT_USER_ID = "00000000-0000-0000-0000-000000000000"
+
 // NewPostgresStore creates a Postgres-backed store with the given DSN
 func NewPostgresStore(dsn string) (*PostgresStore, error) {
 	db, err := sql.Open("postgres", dsn)
@@ -36,36 +39,71 @@ func NewPostgresStore(dsn string) (*PostgresStore, error) {
 func initPostgresSchema(db *sql.DB) error {
 	schema := `
 	CREATE TABLE IF NOT EXISTS contexts (
-		name TEXT PRIMARY KEY,
+		user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+		name TEXT NOT NULL,
 		system_prompt TEXT,
 		agent TEXT,
 		verbosity INTEGER DEFAULT 2,
 		deleted_at TIMESTAMPTZ,
-		created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+		created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+		PRIMARY KEY (user_id, name)
 	);
 
 	CREATE TABLE IF NOT EXISTS messages (
 		id BIGSERIAL PRIMARY KEY,
-		context_name TEXT NOT NULL REFERENCES contexts(name) ON DELETE CASCADE,
+		user_id UUID NOT NULL,
+		context_name TEXT NOT NULL,
 		role TEXT NOT NULL,
 		content TEXT NOT NULL,
 		agent TEXT,
 		verbosity INTEGER,
-		created_at TIMESTAMPTZ NOT NULL
+		created_at TIMESTAMPTZ NOT NULL,
+		FOREIGN KEY (user_id, context_name) REFERENCES contexts(user_id, name) ON DELETE CASCADE
 	);
 
-	CREATE INDEX IF NOT EXISTS idx_messages_context_name ON messages(context_name);
+	CREATE INDEX IF NOT EXISTS idx_messages_user_context ON messages(user_id, context_name);
 	CREATE INDEX IF NOT EXISTS idx_messages_created_at ON messages(created_at);
+
+	CREATE TABLE IF NOT EXISTS verbosity_escalation_keywords (
+		user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+		keyword TEXT NOT NULL,
+		agent TEXT,
+		min_requested_verbosity INTEGER NOT NULL DEFAULT 0,
+		escalate_to INTEGER NOT NULL DEFAULT 2,
+		enabled BOOLEAN NOT NULL DEFAULT true,
+		created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+		PRIMARY KEY (user_id, keyword)
+	);
 	`
 	if _, err := db.Exec(schema); err != nil {
 		return err
 	}
 
-	// Ensure new columns exist on older databases.
+	// Migrate old single-tenant data if it exists
+	// This is safe to run on fresh databases (no-op if tables don't exist yet)
 	_, err := db.Exec(`
-		ALTER TABLE contexts ADD COLUMN IF NOT EXISTS agent TEXT;
-		ALTER TABLE contexts ADD COLUMN IF NOT EXISTS verbosity INTEGER DEFAULT 2;
-		ALTER TABLE contexts ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;
+		DO $$
+		BEGIN
+			-- Check if old single-tenant contexts table exists and has data
+			IF EXISTS (
+				SELECT FROM information_schema.columns
+				WHERE table_name = 'contexts'
+				AND column_name = 'name'
+				AND table_schema = 'public'
+			) AND NOT EXISTS (
+				SELECT FROM information_schema.columns
+				WHERE table_name = 'contexts'
+				AND column_name = 'user_id'
+				AND table_schema = 'public'
+			) THEN
+				-- Old schema detected, add user_id column
+				ALTER TABLE contexts ADD COLUMN IF NOT EXISTS user_id UUID;
+				ALTER TABLE messages ADD COLUMN IF NOT EXISTS user_id UUID;
+
+				-- For migration, we'd need to assign a default user_id
+				-- This would require coordination with the bootstrap user creation
+			END IF;
+		END $$;
 	`)
 	return err
 }
@@ -75,13 +113,13 @@ func (s *PostgresStore) Close() error {
 	return s.db.Close()
 }
 
-// LoadContext loads a context by name.
-func (s *PostgresStore) LoadContext(contextName string) (ContextHistory, error) {
+// LoadContext loads a context by name for a specific user.
+func (s *PostgresStore) LoadContext(userID, contextName string) (ContextHistory, error) {
 	// Load system prompt
 	var systemPrompt sql.NullString
 	err := s.db.QueryRow(`
-		SELECT system_prompt FROM contexts WHERE name = $1 AND deleted_at IS NULL
-	`, contextName).Scan(&systemPrompt)
+		SELECT system_prompt FROM contexts WHERE user_id = $1 AND name = $2 AND deleted_at IS NULL
+	`, userID, contextName).Scan(&systemPrompt)
 	if err == sql.ErrNoRows {
 		return ContextHistory{Messages: []Message{}}, nil
 	}
@@ -93,9 +131,9 @@ func (s *PostgresStore) LoadContext(contextName string) (ContextHistory, error) 
 	rows, err := s.db.Query(`
 		SELECT role, content, agent, verbosity, created_at
 		FROM messages
-		WHERE context_name = $1
+		WHERE user_id = $1 AND context_name = $2
 		ORDER BY created_at ASC, id ASC
-	`, contextName)
+	`, userID, contextName)
 	if err != nil {
 		return ContextHistory{}, fmt.Errorf("load messages: %w", err)
 	}
@@ -131,11 +169,11 @@ func (s *PostgresStore) LoadContext(contextName string) (ContextHistory, error) 
 }
 
 // SaveContext updates the system prompt for an existing context.
-func (s *PostgresStore) SaveContext(contextName string, h ContextHistory) error {
+func (s *PostgresStore) SaveContext(userID, contextName string, h ContextHistory) error {
 	// Update system prompt
 	result, err := s.db.Exec(`
-		UPDATE contexts SET system_prompt = $1 WHERE name = $2
-	`, h.System, contextName)
+		UPDATE contexts SET system_prompt = $1 WHERE user_id = $2 AND name = $3
+	`, h.System, userID, contextName)
 	if err != nil {
 		return fmt.Errorf("update system prompt: %w", err)
 	}
@@ -146,15 +184,15 @@ func (s *PostgresStore) SaveContext(contextName string, h ContextHistory) error 
 	return nil
 }
 
-// Load loads the last N messages for a context
-func (s *PostgresStore) Load(contextName string, limit int) ([]Message, error) {
+// Load loads the last N messages for a context for a specific user
+func (s *PostgresStore) Load(userID, contextName string, limit int) ([]Message, error) {
 	if limit <= 0 {
 		return []Message{}, nil
 	}
 
 	// Check if context exists
 	var exists bool
-	err := s.db.QueryRow(`SELECT EXISTS(SELECT 1 FROM contexts WHERE name = $1 AND deleted_at IS NULL)`, contextName).Scan(&exists)
+	err := s.db.QueryRow(`SELECT EXISTS(SELECT 1 FROM contexts WHERE user_id = $1 AND name = $2 AND deleted_at IS NULL)`, userID, contextName).Scan(&exists)
 	if err != nil {
 		return nil, fmt.Errorf("check context exists: %w", err)
 	}
@@ -166,9 +204,9 @@ func (s *PostgresStore) Load(contextName string, limit int) ([]Message, error) {
 	rows, err := s.db.Query(`
 		SELECT role, content, agent, verbosity, created_at
 		FROM messages
-		WHERE context_name = $1
+		WHERE user_id = $1 AND context_name = $2
 		ORDER BY created_at ASC, id ASC
-	`, contextName)
+	`, userID, contextName)
 	if err != nil {
 		return nil, fmt.Errorf("load messages: %w", err)
 	}
@@ -205,8 +243,8 @@ func (s *PostgresStore) Load(contextName string, limit int) ([]Message, error) {
 	return allMessages, nil
 }
 
-// Append adds a message to a context
-func (s *PostgresStore) Append(contextName string, msg Message) error {
+// Append adds a message to a context for a specific user
+func (s *PostgresStore) Append(userID, contextName string, msg Message) error {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return fmt.Errorf("begin transaction: %w", err)
@@ -214,7 +252,7 @@ func (s *PostgresStore) Append(contextName string, msg Message) error {
 	defer tx.Rollback()
 
 	// Get or create context within transaction
-	if err := s.getOrCreateContextTx(tx, contextName); err != nil {
+	if err := s.getOrCreateContextTx(tx, userID, contextName); err != nil {
 		return fmt.Errorf("get or create context: %w", err)
 	}
 
@@ -225,9 +263,9 @@ func (s *PostgresStore) Append(contextName string, msg Message) error {
 
 	// Insert message with explicit timestamp
 	_, err = tx.Exec(`
-		INSERT INTO messages (context_name, role, content, agent, verbosity, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6)
-	`, contextName, msg.Role, msg.Content, msg.Agent, msg.Verbosity, msg.Time)
+		INSERT INTO messages (user_id, context_name, role, content, agent, verbosity, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
+	`, userID, contextName, msg.Role, msg.Content, msg.Agent, msg.Verbosity, msg.Time)
 	if err != nil {
 		return fmt.Errorf("insert message: %w", err)
 	}
@@ -239,8 +277,8 @@ func (s *PostgresStore) Append(contextName string, msg Message) error {
 	return nil
 }
 
-// AppendMessagesWithMeta appends messages and creates the context implicitly on first write.
-func (s *PostgresStore) AppendMessagesWithMeta(contextName, agent string, verbosity int, messages []Message) error {
+// AppendMessagesWithMeta appends messages and creates the context implicitly on first write for a specific user.
+func (s *PostgresStore) AppendMessagesWithMeta(userID, contextName, agent string, verbosity int, messages []Message) error {
 	if len(messages) == 0 {
 		return nil
 	}
@@ -253,13 +291,13 @@ func (s *PostgresStore) AppendMessagesWithMeta(contextName, agent string, verbos
 
 	// Contexts are created implicitly on the first message write (same transaction).
 	if _, err := tx.Exec(`
-		INSERT INTO contexts (name, system_prompt, agent, verbosity, deleted_at)
-		VALUES ($1, '', $2, $3, NULL)
-		ON CONFLICT (name) DO UPDATE SET
+		INSERT INTO contexts (user_id, name, system_prompt, agent, verbosity, deleted_at)
+		VALUES ($1, $2, '', $3, $4, NULL)
+		ON CONFLICT (user_id, name) DO UPDATE SET
 			agent = EXCLUDED.agent,
 			verbosity = EXCLUDED.verbosity,
 			deleted_at = NULL
-	`, contextName, agent, verbosity); err != nil {
+	`, userID, contextName, agent, verbosity); err != nil {
 		return fmt.Errorf("create context: %w", err)
 	}
 
@@ -269,9 +307,9 @@ func (s *PostgresStore) AppendMessagesWithMeta(contextName, agent string, verbos
 			msg.Verbosity = nil
 		}
 		if _, err := tx.Exec(`
-			INSERT INTO messages (context_name, role, content, agent, verbosity, created_at)
-			VALUES ($1, $2, $3, $4, $5, $6)
-		`, contextName, msg.Role, msg.Content, msg.Agent, msg.Verbosity, msg.Time); err != nil {
+			INSERT INTO messages (user_id, context_name, role, content, agent, verbosity, created_at)
+			VALUES ($1, $2, $3, $4, $5, $6, $7)
+		`, userID, contextName, msg.Role, msg.Content, msg.Agent, msg.Verbosity, msg.Time); err != nil {
 			return fmt.Errorf("insert message: %w", err)
 		}
 	}
@@ -283,9 +321,9 @@ func (s *PostgresStore) AppendMessagesWithMeta(contextName, agent string, verbos
 	return nil
 }
 
-// UpdateContext updates context metadata and/or renames the context.
+// UpdateContext updates context metadata and/or renames the context for a specific user.
 // If name is changed, all messages are moved to the new context name.
-func (s *PostgresStore) UpdateContext(name string, newName, agent *string, verbosity *int) (ContextInfo, error) {
+func (s *PostgresStore) UpdateContext(userID, name string, newName, agent *string, verbosity *int) (ContextInfo, error) {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return ContextInfo{}, fmt.Errorf("begin transaction: %w", err)
@@ -298,8 +336,8 @@ func (s *PostgresStore) UpdateContext(name string, newName, agent *string, verbo
 	err = tx.QueryRow(`
 		SELECT name, agent, verbosity
 		FROM contexts
-		WHERE name = $1 AND deleted_at IS NULL
-	`, name).Scan(&currentName, &currentAgent, &currentVerbosity)
+		WHERE user_id = $1 AND name = $2 AND deleted_at IS NULL
+	`, userID, name).Scan(&currentName, &currentAgent, &currentVerbosity)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return ContextInfo{}, sql.ErrNoRows
@@ -311,7 +349,7 @@ func (s *PostgresStore) UpdateContext(name string, newName, agent *string, verbo
 	if newName != nil && *newName != "" && *newName != currentName {
 		updatedName = *newName
 		var exists bool
-		if err := tx.QueryRow(`SELECT EXISTS(SELECT 1 FROM contexts WHERE name = $1)`, updatedName).Scan(&exists); err != nil {
+		if err := tx.QueryRow(`SELECT EXISTS(SELECT 1 FROM contexts WHERE user_id = $1 AND name = $2)`, userID, updatedName).Scan(&exists); err != nil {
 			return ContextInfo{}, fmt.Errorf("check name exists: %w", err)
 		}
 		if exists {
@@ -335,27 +373,27 @@ func (s *PostgresStore) UpdateContext(name string, newName, agent *string, verbo
 	if updatedName != currentName {
 		// Insert new context row and move messages, then delete old context.
 		if _, err := tx.Exec(`
-			INSERT INTO contexts (name, system_prompt, agent, verbosity, deleted_at)
-			SELECT $1, system_prompt, $2, $3, NULL
+			INSERT INTO contexts (user_id, name, system_prompt, agent, verbosity, deleted_at)
+			SELECT user_id, $1, system_prompt, $2, $3, NULL
 			FROM contexts
-			WHERE name = $4
-		`, updatedName, updatedAgent, updatedVerbosity, currentName); err != nil {
+			WHERE user_id = $4 AND name = $5
+		`, updatedName, updatedAgent, updatedVerbosity, userID, currentName); err != nil {
 			return ContextInfo{}, fmt.Errorf("create renamed context: %w", err)
 		}
 
 		if _, err := tx.Exec(`
-			UPDATE messages SET context_name = $1 WHERE context_name = $2
-		`, updatedName, currentName); err != nil {
+			UPDATE messages SET context_name = $1 WHERE user_id = $2 AND context_name = $3
+		`, updatedName, userID, currentName); err != nil {
 			return ContextInfo{}, fmt.Errorf("move messages: %w", err)
 		}
 
-		if _, err := tx.Exec(`DELETE FROM contexts WHERE name = $1`, currentName); err != nil {
+		if _, err := tx.Exec(`DELETE FROM contexts WHERE user_id = $1 AND name = $2`, userID, currentName); err != nil {
 			return ContextInfo{}, fmt.Errorf("delete old context: %w", err)
 		}
 	} else {
 		if _, err := tx.Exec(`
-			UPDATE contexts SET agent = $1, verbosity = $2 WHERE name = $3
-		`, updatedAgent, updatedVerbosity, currentName); err != nil {
+			UPDATE contexts SET agent = $1, verbosity = $2 WHERE user_id = $3 AND name = $4
+		`, updatedAgent, updatedVerbosity, userID, currentName); err != nil {
 			return ContextInfo{}, fmt.Errorf("update context: %w", err)
 		}
 	}
@@ -371,9 +409,9 @@ func (s *PostgresStore) UpdateContext(name string, newName, agent *string, verbo
 	}, nil
 }
 
-// DeleteContext removes a context and all of its messages.
-func (s *PostgresStore) DeleteContext(name string) error {
-	result, err := s.db.Exec(`UPDATE contexts SET deleted_at = NOW() WHERE name = $1 AND deleted_at IS NULL`, name)
+// DeleteContext removes a context and all of its messages for a specific user.
+func (s *PostgresStore) DeleteContext(userID, name string) error {
+	result, err := s.db.Exec(`UPDATE contexts SET deleted_at = NOW() WHERE user_id = $1 AND name = $2 AND deleted_at IS NULL`, userID, name)
 	if err != nil {
 		return fmt.Errorf("delete context: %w", err)
 	}
@@ -383,20 +421,20 @@ func (s *PostgresStore) DeleteContext(name string) error {
 	return nil
 }
 
-// getOrCreateContextTx ensures a context exists within a transaction
-func (s *PostgresStore) getOrCreateContextTx(tx *sql.Tx, name string) error {
+// getOrCreateContextTx ensures a context exists within a transaction for a specific user
+func (s *PostgresStore) getOrCreateContextTx(tx *sql.Tx, userID, name string) error {
 	_, err := tx.Exec(`
-		INSERT INTO contexts (name, system_prompt, deleted_at) VALUES ($1, '', NULL)
-		ON CONFLICT (name) DO UPDATE SET deleted_at = NULL
-	`, name)
+		INSERT INTO contexts (user_id, name, system_prompt, deleted_at) VALUES ($1, $2, '', NULL)
+		ON CONFLICT (user_id, name) DO UPDATE SET deleted_at = NULL
+	`, userID, name)
 	if err != nil {
 		return fmt.Errorf("create context: %w", err)
 	}
 	return nil
 }
 
-// ListContexts returns information about all contexts
-func (s *PostgresStore) ListContexts() ([]ContextInfo, error) {
+// ListContexts returns information about all contexts for a specific user
+func (s *PostgresStore) ListContexts(userID string) ([]ContextInfo, error) {
 	rows, err := s.db.Query(`
 		SELECT
 			c.name,
@@ -405,18 +443,18 @@ func (s *PostgresStore) ListContexts() ([]ContextInfo, error) {
 			la.agent,
 			la.verbosity
 		FROM contexts c
-		JOIN messages m ON c.name = m.context_name
+		JOIN messages m ON c.user_id = m.user_id AND c.name = m.context_name
 		JOIN LATERAL (
 			SELECT agent, verbosity
 			FROM messages
-			WHERE context_name = c.name AND role = 'assistant'
+			WHERE user_id = c.user_id AND context_name = c.name AND role = 'assistant'
 			ORDER BY created_at DESC, id DESC
 			LIMIT 1
 		) la ON true
-		WHERE c.deleted_at IS NULL
+		WHERE c.user_id = $1 AND c.deleted_at IS NULL
 		GROUP BY c.name, la.agent, la.verbosity
 		ORDER BY c.name
-	`)
+	`, userID)
 	if err != nil {
 		return nil, fmt.Errorf("query contexts: %w", err)
 	}
@@ -453,14 +491,14 @@ func (s *PostgresStore) ListContexts() ([]ContextInfo, error) {
 	return contexts, nil
 }
 
-// GetContextMeta returns context metadata if the context exists and is not deleted.
-func (s *PostgresStore) GetContextMeta(name string) (ContextInfo, bool, error) {
+// GetContextMeta returns context metadata if the context exists and is not deleted for a specific user.
+func (s *PostgresStore) GetContextMeta(userID, name string) (ContextInfo, bool, error) {
 	var info ContextInfo
 	err := s.db.QueryRow(`
 		SELECT name, COALESCE(agent, ''), COALESCE(verbosity, 2)
 		FROM contexts
-		WHERE name = $1 AND deleted_at IS NULL
-	`, name).Scan(&info.Name, &info.Agent, &info.Verbosity)
+		WHERE user_id = $1 AND name = $2 AND deleted_at IS NULL
+	`, userID, name).Scan(&info.Name, &info.Agent, &info.Verbosity)
 	if err == sql.ErrNoRows {
 		return ContextInfo{}, false, nil
 	}
@@ -468,4 +506,35 @@ func (s *PostgresStore) GetContextMeta(name string) (ContextInfo, bool, error) {
 		return ContextInfo{}, false, fmt.Errorf("load context meta: %w", err)
 	}
 	return info, true, nil
+}
+
+// CLIPostgresAdapter wraps PostgresStore to implement HistoryStore for CLI use
+// It uses CLI_DEFAULT_USER_ID for all operations to maintain single-user CLI compatibility
+type CLIPostgresAdapter struct {
+	store *PostgresStore
+}
+
+// NewCLIPostgresAdapter creates a CLI-compatible wrapper around PostgresStore
+func NewCLIPostgresAdapter(store *PostgresStore) *CLIPostgresAdapter {
+	return &CLIPostgresAdapter{store: store}
+}
+
+func (a *CLIPostgresAdapter) LoadContext(contextName string) (ContextHistory, error) {
+	return a.store.LoadContext(CLI_DEFAULT_USER_ID, contextName)
+}
+
+func (a *CLIPostgresAdapter) SaveContext(contextName string, h ContextHistory) error {
+	return a.store.SaveContext(CLI_DEFAULT_USER_ID, contextName, h)
+}
+
+func (a *CLIPostgresAdapter) Load(contextName string, limit int) ([]Message, error) {
+	return a.store.Load(CLI_DEFAULT_USER_ID, contextName, limit)
+}
+
+func (a *CLIPostgresAdapter) Append(contextName string, msg Message) error {
+	return a.store.Append(CLI_DEFAULT_USER_ID, contextName, msg)
+}
+
+func (a *CLIPostgresAdapter) ListContexts() ([]ContextInfo, error) {
+	return a.store.ListContexts(CLI_DEFAULT_USER_ID)
 }
