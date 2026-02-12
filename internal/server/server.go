@@ -19,6 +19,27 @@ import (
 
 const DefaultAddr = "0.0.0.0:1337"
 
+// corsMiddleware adds CORS headers to support cross-origin requests from frontend
+func corsMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		origin := r.Header.Get("Origin")
+		if origin != "" {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Set("Access-Control-Allow-Credentials", "true")
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+		}
+
+		// Handle preflight requests
+		if r.Method == "OPTIONS" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
+}
+
 // Run starts the HTTP server
 func Run(modelOverride string, historyStore *store.PostgresStore, agentRepo agent.AgentRepository, db *sql.DB) error {
 	// Explicitly bind to IPv4 to ensure LAN reachability on Windows/WSL2
@@ -52,7 +73,10 @@ func Run(modelOverride string, historyStore *store.PostgresStore, agentRepo agen
 	http.HandleFunc("/verbosity/keywords", auth.RequireAuth(db, handleVerbosityKeywords(historyStore)))
 	http.HandleFunc("/verbosity/keywords/", auth.RequireAuth(db, handleVerbosityKeyword(historyStore)))
 
-	return http.Serve(listener, nil)
+	// Wrap default mux with CORS middleware
+	handler := corsMiddleware(http.DefaultServeMux)
+
+	return http.Serve(listener, handler)
 }
 
 func handleHealth(w http.ResponseWriter, r *http.Request) {
