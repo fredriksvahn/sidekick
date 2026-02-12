@@ -527,6 +527,27 @@ func handleChat(historyStore *store.PostgresStore) http.HandlerFunc {
 				fmt.Fprintf(os.Stderr, "[sidekick] failed to persist messages: %v\n", err)
 			}
 
+			// Auto-rename context based on first message
+			if len(ctxHist.Messages) == 0 && len(req.Messages) > 0 {
+				firstUserMsg := ""
+				for _, msg := range req.Messages {
+					if msg.Role == "user" {
+						firstUserMsg = msg.Content
+						break
+					}
+				}
+
+				if firstUserMsg != "" {
+					newName := autoGenerateContextName(firstUserMsg, model)
+					if newName != "" && newName != contextName {
+						// Attempt to rename - ignore errors to not block the response
+						if updated, err := historyStore.UpdateContext(userID.String(), contextName, &newName, nil, nil); err == nil {
+							contextName = updated.Name
+						}
+					}
+				}
+			}
+
 			// Send "finalizing" progress event
 			finalizingPayload, _ := json.Marshal(map[string]any{
 				"stage": "finalizing",
@@ -584,6 +605,27 @@ func handleChat(historyStore *store.PostgresStore) http.HandlerFunc {
 		if err := historyStore.AppendMessagesWithMeta(userID.String(), contextName, agentName, verbosity, stored); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
+		}
+
+		// Auto-rename context based on first message
+		if len(ctxHist.Messages) == 0 && len(req.Messages) > 0 {
+			firstUserMsg := ""
+			for _, msg := range req.Messages {
+				if msg.Role == "user" {
+					firstUserMsg = msg.Content
+					break
+				}
+			}
+
+			if firstUserMsg != "" {
+				newName := autoGenerateContextName(firstUserMsg, model)
+				if newName != "" && newName != contextName {
+					// Attempt to rename - ignore errors to not block the response
+					if updated, err := historyStore.UpdateContext(userID.String(), contextName, &newName, nil, nil); err == nil {
+						contextName = updated.Name
+					}
+				}
+			}
 		}
 
 		type contextResponse struct {
@@ -1239,5 +1281,43 @@ func applyVerbosityConstraint(messages []chat.Message, verbosity int) []chat.Mes
 	}
 
 	return append([]chat.Message{{Role: "system", Content: constraint}}, out...)
+}
+
+// autoGenerateContextName uses Ollama to generate a short, descriptive name for a conversation
+// based on the first user message. Returns empty string on error.
+func autoGenerateContextName(firstUserMessage, model string) string {
+	if strings.TrimSpace(firstUserMessage) == "" {
+		return ""
+	}
+
+	titlePrompt := []chat.Message{
+		{
+			Role: "system",
+			Content: "Generate a short 3-5 word title for this conversation. " +
+				"Only respond with the title, nothing else. No quotes, no punctuation at the end.",
+		},
+		{
+			Role:    "user",
+			Content: firstUserMessage,
+		},
+	}
+
+	// Use a simple executor with verbosity 0 (minimal) for title generation
+	executor := &executor.OllamaExecutor{Model: model, Verbosity: 0}
+	title, err := executor.Execute(titlePrompt)
+	if err != nil {
+		return ""
+	}
+
+	// Clean up the title
+	title = strings.TrimSpace(title)
+	title = strings.Trim(title, "\"'")
+
+	// Limit length to 50 characters max
+	if len(title) > 50 {
+		title = title[:50]
+	}
+
+	return title
 }
 
