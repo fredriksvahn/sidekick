@@ -39,7 +39,7 @@ func NewPostgresStore(dsn string) (*PostgresStore, error) {
 func initPostgresSchema(db *sql.DB) error {
 	schema := `
 	CREATE TABLE IF NOT EXISTS contexts (
-		user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+		user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
 		name TEXT NOT NULL,
 		system_prompt TEXT,
 		agent TEXT,
@@ -51,7 +51,7 @@ func initPostgresSchema(db *sql.DB) error {
 
 	CREATE TABLE IF NOT EXISTS messages (
 		id BIGSERIAL PRIMARY KEY,
-		user_id UUID NOT NULL,
+		user_id TEXT NOT NULL,
 		context_name TEXT NOT NULL,
 		role TEXT NOT NULL,
 		content TEXT NOT NULL,
@@ -65,7 +65,7 @@ func initPostgresSchema(db *sql.DB) error {
 	CREATE INDEX IF NOT EXISTS idx_messages_created_at ON messages(created_at);
 
 	CREATE TABLE IF NOT EXISTS verbosity_escalation_keywords (
-		user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+		user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
 		keyword TEXT NOT NULL,
 		agent TEXT,
 		min_requested_verbosity INTEGER NOT NULL DEFAULT 0,

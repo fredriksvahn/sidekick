@@ -7,7 +7,7 @@ import "database/sql"
 func InitSchema(db *sql.DB) error {
 	_, err := db.Exec(`
 		CREATE TABLE IF NOT EXISTS users (
-			id              UUID       PRIMARY KEY DEFAULT gen_random_uuid(),
+			id              TEXT       PRIMARY KEY,
 			email           TEXT       UNIQUE NOT NULL,
 			password_hash   TEXT       NOT NULL,
 			created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -16,7 +16,7 @@ func InitSchema(db *sql.DB) error {
 
 		CREATE TABLE IF NOT EXISTS sessions (
 			token      TEXT        PRIMARY KEY,
-			user_id    UUID        NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			user_id    TEXT        NOT NULL REFERENCES users(id) ON DELETE CASCADE,
 			issued_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 			expires_at TIMESTAMPTZ NOT NULL
 		);
