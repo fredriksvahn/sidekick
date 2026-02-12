@@ -9,10 +9,11 @@ import (
 	"time"
 )
 
-// secureCookies returns true unless SIDEKICK_COOKIE_SECURE is explicitly "false".
-// Defaults to true so cookies are not sent over plain HTTP in production.
+// secureCookies returns true only if SIDEKICK_COOKIE_SECURE is explicitly "true".
+// Defaults to false for easier local development over HTTP.
+// Set SIDEKICK_COOKIE_SECURE=true in production with HTTPS.
 func secureCookies() bool {
-	return strings.ToLower(os.Getenv("SIDEKICK_COOKIE_SECURE")) != "false"
+	return strings.ToLower(os.Getenv("SIDEKICK_COOKIE_SECURE")) == "true"
 }
 
 // HandleLogin handles POST /auth/login.
