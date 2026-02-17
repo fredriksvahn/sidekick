@@ -90,10 +90,17 @@ func handleExecute(modelOverride string, keywordStore store.VerbosityKeywordList
 			return
 		}
 
+		userID, ok := auth.UserIDFromContext(r.Context())
+		if !ok {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+
 		var req struct {
 			Messages  []chat.Message `json:"messages"`
 			Verbosity *int           `json:"verbosity"`
 			Stream    bool           `json:"stream"`
+			Agent     string         `json:"agent"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, "invalid JSON", http.StatusBadRequest)
@@ -104,15 +111,37 @@ func handleExecute(modelOverride string, keywordStore store.VerbosityKeywordList
 			return
 		}
 
+		agentID := strings.TrimSpace(req.Agent)
+		if agentID == "" {
+			agentID = "default"
+		}
+		profile := agent.GetProfileForUser(userID.String(), agentID)
+
+		model := modelOverride
+		systemPrompt := ""
+		if profile != nil {
+			model = profile.LocalModel
+			systemPrompt = profile.SystemPrompt
+		}
+
 		lastUserMessage := latestUserMessage(req.Messages)
-		escalationResult, err := executor.ResolveVerbosity(r.Context(), req.Verbosity, executor.DefaultVerbosity(), "default", lastUserMessage, "", keywordStore)
+		escalationResult, err := executor.ResolveVerbosity(r.Context(), req.Verbosity, executor.DefaultVerbosity(), agentID, lastUserMessage, userID.String(), keywordStore)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 		verbosity := escalationResult.EffectiveVerbosity
 		warning := escalationResult.Warning
-		messages := applyVerbosityConstraint(req.Messages, verbosity)
+
+		if constraint := executor.SystemConstraint(verbosity); constraint != "" {
+			if systemPrompt != "" {
+				systemPrompt = systemPrompt + "\n\n" + constraint
+			} else {
+				systemPrompt = constraint
+			}
+		}
+
+		messages := applyVerbosityConstraint(buildChatMessages(systemPrompt, nil, req.Messages), verbosity)
 
 		logf := func(msg string) {
 			fmt.Fprintf(os.Stderr, "[sidekick] %s\n", msg)
@@ -197,7 +226,7 @@ func handleExecute(modelOverride string, keywordStore store.VerbosityKeywordList
 				return nil
 			}
 
-			reply, err = (&executor.OllamaExecutor{Model: modelOverride, Log: logf, Verbosity: verbosity}).ExecuteStreaming(messages, onDelta)
+			reply, err = (&executor.OllamaExecutor{Model: model, Log: logf, Verbosity: verbosity}).ExecuteStreaming(messages, onDelta)
 			if err != nil {
 				// Can't use http.Error after headers sent
 				errPayload, _ := json.Marshal(map[string]any{
@@ -226,7 +255,7 @@ func handleExecute(modelOverride string, keywordStore store.VerbosityKeywordList
 		}
 
 		// Non-streaming path
-		reply, err = (&executor.OllamaExecutor{Model: modelOverride, Log: logf, Verbosity: verbosity}).Execute(messages)
+		reply, err = (&executor.OllamaExecutor{Model: model, Log: logf, Verbosity: verbosity}).Execute(messages)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadGateway)
 			return
@@ -369,11 +398,11 @@ func handleChat(historyStore *store.PostgresStore) http.HandlerFunc {
 		}
 
 		warning := ""
-		profile := agent.GetProfile(agentName)
+		profile := agent.GetProfileForUser(userID.String(), agentName)
 		if profile == nil {
-			warning = fmt.Sprintf("agent %q not found; falling back to %q", agentName, defaultAgent)
+			warning = fmt.Sprintf("agent %q not found or not assigned; falling back to %q", agentName, defaultAgent)
 			agentName = defaultAgent
-			profile = agent.GetProfile(agentName)
+			profile = agent.GetProfileForUser(userID.String(), agentName)
 		}
 		verbosityInput := req.Verbosity
 		if verbosityInput == nil && hasContext {
@@ -661,6 +690,12 @@ func handleAPIAgents(agentRepo agent.AgentRepository) http.HandlerFunc {
 
 		switch r.Method {
 		case http.MethodGet:
+			userID, ok := auth.UserIDFromContext(r.Context())
+			if !ok {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+
 			enabledOnly := false
 			if v := strings.TrimSpace(r.URL.Query().Get("enabled")); v != "" {
 				if v == "true" {
@@ -671,15 +706,14 @@ func handleAPIAgents(agentRepo agent.AgentRepository) http.HandlerFunc {
 				}
 			}
 
-			var (
-				agents []*agent.AgentRecord
-				err    error
-			)
-			if enabledOnly {
-				agents, err = agentRepo.ListEnabled()
-			} else {
-				agents, err = agentRepo.List()
+			// Cast to PostgresRepository to access user-scoped methods
+			pgRepo, ok := agentRepo.(*agent.PostgresRepository)
+			if !ok {
+				http.Error(w, "repository does not support user-scoped operations", http.StatusInternalServerError)
+				return
 			}
+
+			agents, err := pgRepo.ListAgentsByUser(userID.String(), enabledOnly)
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
@@ -715,6 +749,12 @@ func handleAPIAgents(agentRepo agent.AgentRepository) http.HandlerFunc {
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(response)
 		case http.MethodPost:
+			userID, ok := auth.UserIDFromContext(r.Context())
+			if !ok {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+
 			var input struct {
 				ID               string  `json:"id"`
 				Name             string  `json:"name"`
@@ -729,16 +769,43 @@ func handleAPIAgents(agentRepo agent.AgentRepository) http.HandlerFunc {
 				return
 			}
 
+			// Cast to PostgresRepository to access user-scoped methods
+			pgRepo, ok := agentRepo.(*agent.PostgresRepository)
+			if !ok {
+				http.Error(w, "repository does not support user-scoped operations", http.StatusInternalServerError)
+				return
+			}
+
 			existing, err := agentRepo.Get(input.ID)
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
+
 			if existing != nil {
-				http.Error(w, "agent already exists", http.StatusConflict)
+				// Agent exists globally - assign to user
+				if err := pgRepo.AssignAgentToUser(userID.String(), input.ID); err != nil {
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+					return
+				}
+
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusOK)
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"id":                existing.ID,
+					"name":              existing.Name,
+					"base_agent":        existing.BaseAgent,
+					"model":             existing.Model,
+					"system_prompt":     existing.SystemPrompt,
+					"default_verbosity": existing.DefaultVerbosity,
+					"enabled":           existing.Enabled,
+					"revision":          existing.Revision,
+					"updated_at":        existing.UpdatedAt.UTC().Format(time.RFC3339),
+				})
 				return
 			}
 
+			// Agent doesn't exist - create and assign
 			verbosity := 2
 			if input.DefaultVerbosity != nil {
 				verbosity = *input.DefaultVerbosity
@@ -760,6 +827,12 @@ func handleAPIAgents(agentRepo agent.AgentRepository) http.HandlerFunc {
 
 			if err := agentRepo.Create(newAgent); err != nil {
 				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+
+			// Assign to user
+			if err := pgRepo.AssignAgentToUser(userID.String(), newAgent.ID); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
 
@@ -798,6 +871,30 @@ func handleAPIAgent(agentRepo agent.AgentRepository) http.HandlerFunc {
 
 		switch r.Method {
 		case http.MethodGet:
+			userID, ok := auth.UserIDFromContext(r.Context())
+			if !ok {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+
+			// Cast to PostgresRepository to access user-scoped methods
+			pgRepo, ok := agentRepo.(*agent.PostgresRepository)
+			if !ok {
+				http.Error(w, "repository does not support user-scoped operations", http.StatusInternalServerError)
+				return
+			}
+
+			// Check if user has access to this agent
+			assigned, err := pgRepo.IsAssignedToUser(userID.String(), id)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			if !assigned {
+				http.Error(w, "agent not found", http.StatusNotFound)
+				return
+			}
+
 			a, err := agentRepo.Get(id)
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -823,102 +920,92 @@ func handleAPIAgent(agentRepo agent.AgentRepository) http.HandlerFunc {
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(response)
 		case http.MethodPatch:
+			userID, ok := auth.UserIDFromContext(r.Context())
+			if !ok {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+
+			// Cast to PostgresRepository to access user-scoped methods
+			pgRepo, ok := agentRepo.(*agent.PostgresRepository)
+			if !ok {
+				http.Error(w, "repository does not support user-scoped operations", http.StatusInternalServerError)
+				return
+			}
+
+			// Check if user has access to this agent
+			assigned, err := pgRepo.IsAssignedToUser(userID.String(), id)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			if !assigned {
+				http.Error(w, "agent not found", http.StatusNotFound)
+				return
+			}
+
 			var input map[string]interface{}
 			if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
 				http.Error(w, "invalid JSON", http.StatusBadRequest)
 				return
 			}
 
-			existing, err := agentRepo.Get(id)
-			if err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
-			if existing == nil {
-				http.Error(w, "agent not found", http.StatusNotFound)
-				return
-			}
-
-			if name, ok := input["name"]; ok {
-				val, ok := name.(string)
-				if !ok {
-					http.Error(w, "name must be a string", http.StatusBadRequest)
-					return
-				}
-				existing.Name = val
-			}
-			if model, ok := input["model"]; ok {
-				val, ok := model.(string)
-				if !ok {
-					http.Error(w, "model must be a string", http.StatusBadRequest)
-					return
-				}
-				existing.Model = val
-			}
-			if prompt, ok := input["system_prompt"]; ok {
-				val, ok := prompt.(string)
-				if !ok {
-					http.Error(w, "system_prompt must be a string", http.StatusBadRequest)
-					return
-				}
-				existing.SystemPrompt = val
-			}
-			if verbosity, ok := input["default_verbosity"]; ok {
-				val, ok := verbosity.(float64)
-				if !ok {
-					http.Error(w, "default_verbosity must be a number", http.StatusBadRequest)
-					return
-				}
-				existing.DefaultVerbosity = int(val)
-			}
-			if enabled, ok := input["enabled"]; ok {
-				val, ok := enabled.(bool)
-				if !ok {
-					http.Error(w, "enabled must be a boolean", http.StatusBadRequest)
-					return
-				}
-				existing.Enabled = val
-			}
-			if baseAgent, ok := input["base_agent"]; ok {
-				if baseAgent == nil {
-					existing.BaseAgent = nil
-				} else {
-					val, ok := baseAgent.(string)
+			// Only allow updating the enabled flag (user-level toggle)
+			// Global agent properties cannot be modified
+			if len(input) == 1 {
+				if enabled, ok := input["enabled"]; ok {
+					val, ok := enabled.(bool)
 					if !ok {
-						http.Error(w, "base_agent must be a string or null", http.StatusBadRequest)
+						http.Error(w, "enabled must be a boolean", http.StatusBadRequest)
 						return
 					}
-					existing.BaseAgent = &val
-				}
-			}
 
-			if err := agentRepo.Update(existing); err != nil {
-				http.Error(w, err.Error(), http.StatusBadRequest)
-				return
-			}
+					if err := pgRepo.SetUserAgentEnabled(userID.String(), id, val); err != nil {
+						http.Error(w, err.Error(), http.StatusInternalServerError)
+						return
+					}
 
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"id":                existing.ID,
-				"name":              existing.Name,
-				"base_agent":        existing.BaseAgent,
-				"model":             existing.Model,
-				"system_prompt":     existing.SystemPrompt,
-				"default_verbosity": existing.DefaultVerbosity,
-				"enabled":           existing.Enabled,
-				"revision":          existing.Revision,
-				"updated_at":        existing.UpdatedAt.UTC().Format(time.RFC3339),
-			})
-		case http.MethodDelete:
-			if id == "default" {
-				http.Error(w, "cannot delete default agent", http.StatusBadRequest)
-				return
-			}
-			if err := agentRepo.Delete(id); err != nil {
-				if strings.HasPrefix(err.Error(), "agent not found") {
-					http.Error(w, "agent not found", http.StatusNotFound)
+					// Return the agent with updated user-level enabled flag
+					a, err := agentRepo.Get(id)
+					if err != nil {
+						http.Error(w, err.Error(), http.StatusInternalServerError)
+						return
+					}
+
+					w.Header().Set("Content-Type", "application/json")
+					_ = json.NewEncoder(w).Encode(map[string]any{
+						"id":                a.ID,
+						"name":              a.Name,
+						"base_agent":        a.BaseAgent,
+						"model":             a.Model,
+						"system_prompt":     a.SystemPrompt,
+						"default_verbosity": a.DefaultVerbosity,
+						"enabled":           a.Enabled,
+						"revision":          a.Revision,
+						"updated_at":        a.UpdatedAt.UTC().Format(time.RFC3339),
+					})
 					return
 				}
+			}
+
+			// Reject attempts to modify global agent properties
+			http.Error(w, "cannot modify global agent properties; only 'enabled' flag can be updated", http.StatusForbidden)
+		case http.MethodDelete:
+			userID, ok := auth.UserIDFromContext(r.Context())
+			if !ok {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+
+			// Cast to PostgresRepository to access user-scoped methods
+			pgRepo, ok := agentRepo.(*agent.PostgresRepository)
+			if !ok {
+				http.Error(w, "repository does not support user-scoped operations", http.StatusInternalServerError)
+				return
+			}
+
+			// Unassign the agent from the user (does not delete global agent)
+			if err := pgRepo.UnassignAgentFromUser(userID.String(), id); err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}

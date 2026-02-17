@@ -4,7 +4,7 @@ import "github.com/earlysvahn/sidekick/internal/agent"
 
 const (
 	minVerbosity = 0
-	maxVerbosity = 4
+	maxVerbosity = 5
 )
 
 // Effective determines the verbosity level to use.
@@ -39,7 +39,7 @@ func ClampVerbosity(value int) (int, bool) {
 }
 
 // MaxTokens maps verbosity to a hard token budget.
-// Keep 0 as smallest and 4 as largest for predictability.
+// Returns -1 for verbosity 5 (max), which signals the executor to omit num_predict entirely.
 func MaxTokens(verbosity int) int {
 	switch verbosity {
 	case 0:
@@ -52,6 +52,8 @@ func MaxTokens(verbosity int) int {
 		return 2048
 	case 4:
 		return 8192
+	case 5:
+		return -1 // no cap — let the model decide
 	default:
 		return 512
 	}
@@ -70,6 +72,8 @@ func SystemConstraint(verbosity int) string {
 		return "Respond with detailed, pedagogical explanations. Use sections and lists when helpful."
 	case 4:
 		return "Respond with exhaustive detail, covering rationale, alternatives, and edge cases with examples."
+	case 5:
+		return "Complete the task fully and accurately. Do not truncate or summarize unless the task asks you to. Do not pad with filler, disclaimers, or repetition."
 	default:
 		return ""
 	}

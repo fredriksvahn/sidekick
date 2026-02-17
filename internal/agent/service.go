@@ -77,6 +77,71 @@ func ListProfiles() []string {
 	return names
 }
 
+// GetProfileForUser retrieves a profile by ID for a specific user.
+// Only returns the profile if the user has access via user_agents table.
+// Falls back to hardcoded profiles if database is not initialized.
+// Returns nil if not found or not assigned to user.
+func GetProfileForUser(userID, agentID string) *AgentProfile {
+	repoMu.RLock()
+	repo := globalRepo
+	repoMu.RUnlock()
+
+	// If database is initialized, load from database with user check
+	if repo != nil {
+		// Try to cast to PostgresRepository to access user-scoped methods
+		if pgRepo, ok := repo.(*PostgresRepository); ok {
+			agent, err := pgRepo.GetAgentByUser(userID, agentID)
+			if err == nil && agent != nil {
+				return agent.ToAgentProfile()
+			}
+		}
+	}
+
+	// Fallback to hardcoded profiles (no user scoping for hardcoded)
+	if p, ok := Profiles[agentID]; ok {
+		return &p
+	}
+	return nil
+}
+
+// ListProfilesForUser returns enabled profile IDs for a specific user.
+// Only returns agents assigned to the user via user_agents table.
+func ListProfilesForUser(userID string, enabledOnly bool) []string {
+	repoMu.RLock()
+	repo := globalRepo
+	repoMu.RUnlock()
+
+	// If database is initialized, load from database with user filtering
+	if repo != nil {
+		// Try to cast to PostgresRepository to access user-scoped methods
+		if pgRepo, ok := repo.(*PostgresRepository); ok {
+			agents, err := pgRepo.ListAgentsByUser(userID, enabledOnly)
+			if err == nil && len(agents) > 0 {
+				ids := make([]string, len(agents))
+				for i, agent := range agents {
+					ids[i] = agent.ID
+				}
+				return ids
+			}
+		}
+	}
+
+	// Fallback to hardcoded profiles
+	names := make([]string, 0, len(Profiles))
+	for name := range Profiles {
+		names = append(names, name)
+	}
+	// Simple sort
+	for i := 0; i < len(names); i++ {
+		for j := i + 1; j < len(names); j++ {
+			if names[i] > names[j] {
+				names[i], names[j] = names[j], names[i]
+			}
+		}
+	}
+	return names
+}
+
 // MigrateHardcodedAgents populates the database with hardcoded profiles.
 // Only inserts agents that don't already exist in the database.
 // This is called once on first run to seed the database.
