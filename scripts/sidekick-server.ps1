@@ -132,6 +132,23 @@ try {
         if ($val) { [System.Environment]::SetEnvironmentVariable($key, $val, "Process") }
     }
 
+    # Fill any still-missing vars from secrets.json
+    $secretsFile = "$installDir\secrets.json"
+    if (Test-Path $secretsFile) {
+        $secrets = Get-Content $secretsFile | ConvertFrom-Json
+        $secretsMap = @{
+            "SIDEKICK_DISCORD_WEBHOOK" = $secrets.discord_webhook
+            "SIDEKICK_POSTGRES_DSN"    = $secrets.postgres_dsn
+            "SIDEKICK_API_KEY"         = $secrets.api_key
+            "SIDEKICK_API_USER_ID"     = $secrets.api_user_id
+        }
+        foreach ($kv in $secretsMap.GetEnumerator()) {
+            if ($kv.Value -and -not [System.Environment]::GetEnvironmentVariable($kv.Key, "Process")) {
+                [System.Environment]::SetEnvironmentVariable($kv.Key, $kv.Value, "Process")
+            }
+        }
+    }
+
     # Run server
     Log "Starting server on 0.0.0.0:1337..."
     & "$installDir\sidekick.exe" --serve 2>&1 | ForEach-Object { Log $_ }
