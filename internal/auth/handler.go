@@ -18,11 +18,20 @@ func secureCookies() bool {
 
 // HandleLogin handles POST /auth/login.
 // Validates email + password, creates a session, and sets the session cookie.
-func HandleLogin(db *sql.DB) http.HandlerFunc {
+// limiter may be nil (disables rate limiting).
+func HandleLogin(db *sql.DB, limiter *LoginLimiter) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
+		}
+
+		if limiter != nil {
+			ip := clientIP(r)
+			if limiter.IsBlocked(ip) {
+				http.Error(w, "too many failed login attempts, try again later", http.StatusTooManyRequests)
+				return
+			}
 		}
 
 		var req struct {
@@ -47,6 +56,12 @@ func HandleLogin(db *sql.DB) http.HandlerFunc {
 		}
 		// Deliberate: same response for "user not found" and "wrong password".
 		if user == nil || !user.CheckPassword(req.Password) {
+			if limiter != nil {
+				ip := clientIP(r)
+				if newlyBlocked := limiter.RecordFailure(ip); newlyBlocked {
+					go notifyLoginBlock(ip, time.Now().Add(loginBlock))
+				}
+			}
 			http.Error(w, "invalid credentials", http.StatusUnauthorized)
 			return
 		}

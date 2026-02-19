@@ -50,7 +50,8 @@ func Run(modelOverride string, historyStore *store.PostgresStore, agentRepo agen
 	fmt.Fprintf(os.Stderr, "[sidekick] listening on %s\n", listener.Addr())
 
 	// Auth routes (login and logout do not require an existing session)
-	http.HandleFunc("/auth/login", auth.HandleLogin(db))
+	loginLimiter := auth.NewLoginLimiter()
+	http.HandleFunc("/auth/login", auth.HandleLogin(db, loginLimiter))
 	http.HandleFunc("/auth/logout", auth.HandleLogout(db))
 	http.HandleFunc("/auth/me", auth.RequireAuth(db, auth.HandleMe(db)))
 
