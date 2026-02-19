@@ -119,6 +119,19 @@ try {
         Send-DiscordMessage "[OK] Sidekick updated and rebuilt successfully"
     }
 
+    # Load Machine-level env vars so they're available regardless of how this script was launched
+    foreach ($key in @(
+        "SIDEKICK_POSTGRES_DSN",
+        "SIDEKICK_API_KEY",
+        "SIDEKICK_API_USER_ID",
+        "SIDEKICK_AUTH_EMAIL",
+        "SIDEKICK_AUTH_PASSWORD",
+        "SIDEKICK_DISCORD_WEBHOOK"
+    )) {
+        $val = [System.Environment]::GetEnvironmentVariable($key, "Machine")
+        if ($val) { [System.Environment]::SetEnvironmentVariable($key, $val, "Process") }
+    }
+
     # Run server
     Log "Starting server on 0.0.0.0:1337..."
     & "$installDir\sidekick.exe" --serve 2>&1 | ForEach-Object { Log $_ }
