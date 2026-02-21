@@ -5,6 +5,62 @@ info:
 servers:
   - url: http://localhost:1337
 paths:
+  /auth/login:
+    post:
+      summary: Login and create a session
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: Session created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginResponse'
+        '400':
+          description: Missing or invalid fields
+          content:
+            text/plain:
+              schema:
+                type: string
+        '401':
+          description: Invalid credentials
+          content:
+            text/plain:
+              schema:
+                type: string
+        '429':
+          description: Too many failed login attempts
+          content:
+            text/plain:
+              schema:
+                type: string
+  /auth/logout:
+    post:
+      summary: Logout and clear session
+      responses:
+        '204':
+          description: Logged out
+  /auth/me:
+    get:
+      summary: Get current authenticated user
+      responses:
+        '200':
+          description: Current user
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserProfile'
+        '401':
+          description: Not authenticated
+          content:
+            text/plain:
+              schema:
+                type: string
   /health:
     get:
       summary: Health check
@@ -25,6 +81,9 @@ paths:
                   type: array
                   items:
                     $ref: '#/components/schemas/ChatMessage'
+                agent:
+                  type: string
+                  description: Agent ID to use for this request
                 verbosity:
                   type: integer
                   minimum: 0
@@ -268,6 +327,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Agent'
+        '403':
+          description: Attempt to modify global agent properties (only enabled is mutable)
         '404':
           description: Agent not found
     delete:
@@ -371,6 +432,49 @@ paths:
           description: Database error
 components:
   schemas:
+    LoginRequest:
+      type: object
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+      required:
+        - email
+        - password
+    LoginResponse:
+      type: object
+      properties:
+        user_id:
+          type: string
+        email:
+          type: string
+        expires_at:
+          type: string
+          format: date-time
+      required:
+        - user_id
+        - email
+        - expires_at
+    UserProfile:
+      type: object
+      properties:
+        user_id:
+          type: string
+        email:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        last_login_at:
+          type: string
+          format: date-time
+          nullable: true
+      required:
+        - user_id
+        - email
+        - created_at
     ChatMessage:
       type: object
       properties:
@@ -400,13 +504,13 @@ components:
           type: integer
           minimum: 0
           maximum: 4
-        created_at:
+        time:
           type: string
           format: date-time
       required:
         - role
         - content
-        - created_at
+        - time
     ChatRequest:
       type: object
       properties:
@@ -540,22 +644,12 @@ components:
         - system_prompt
     AgentUpdate:
       type: object
+      description: Only the user-level enabled toggle can be updated. Global agent properties are immutable via this API.
       properties:
-        name:
-          type: string
-        base_agent:
-          type: string
-          nullable: true
-        model:
-          type: string
-        system_prompt:
-          type: string
-        default_verbosity:
-          type: integer
-          minimum: 0
-          maximum: 4
         enabled:
           type: boolean
+      required:
+        - enabled
     Settings:
       type: object
       properties:
